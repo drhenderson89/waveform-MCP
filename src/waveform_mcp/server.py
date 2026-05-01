@@ -24,19 +24,27 @@ import sys
 
 from .tools import (
     audio,
+    audio_analysis,
+    audio_detect,
     automation,
     clips,
     composer,
+    composition,
     desktop,
+    drum_patterns,
     edit as edit_tools,
     loops,
+    melody,
     midi,
+    midi_export,
     music_theory,
     plugins,
     preset_library,
+    reference_songs,
     render,
     tracks,
     waveform_app,
+    workflow,
 )
 
 
@@ -44,7 +52,12 @@ def _collect_tools() -> tuple[list[Tool], dict[str, Any]]:
     all_tool_defs: list[dict[str, Any]] = []
     handlers: dict[str, Any] = {}
 
-    modules: list[Any] = [edit_tools, tracks, midi, audio, clips, automation, plugins, render, waveform_app, desktop, preset_library, composer, music_theory, loops]
+    modules: list[Any] = [
+        edit_tools, tracks, midi, audio, clips, automation, plugins, render,
+        waveform_app, desktop, preset_library, composer, music_theory, loops,
+        melody, drum_patterns, composition,
+        audio_analysis, audio_detect, midi_export, reference_songs, workflow,
+    ]
     if sys.platform == "win32":
         from .tools import schema_capture, waveform_workflows, win_input
         modules.extend([win_input, waveform_workflows, schema_capture])

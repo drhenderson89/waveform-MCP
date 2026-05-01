@@ -9,10 +9,10 @@ An [MCP](https://modelcontextprotocol.io/) server that gives an LLM agent contro
 
 ## What this gives you
 
-- **107 MCP tools** across edit lifecycle, tracks, MIDI, audio clips, plugins, automation, music theory, mix balance, render, loop library, VST discovery, schema capture, and Waveform UI control
-- **Two end-to-end composers** — `compose_lofi_track` and `compose_synthwave_track` — that write fully-arranged, mixed, and rendered songs
-- **One ambient composer** — `compose_rainstorm` — for rain + wind + thunder soundscapes
-- **A music-theory knowledge layer** — scales, chord progressions, cadences, song forms, voice-leading rules, mix-balance reference levels per genre
+- **141 MCP tools** across edit lifecycle, tracks/buses, MIDI, audio clips, plugins, automation, music theory, mix balance, **composition primitives**, **drum pattern library**, **progression generator**, **voice leading**, **arrangement planner**, **audio analysis (LUFS / tempo / key detection)**, **reference song database**, **mastering chain templates**, **MIDI export**, **chord chart export**, **A/B snapshots**, **tool-call history**, render, loop library, VST discovery, schema capture, and Waveform UI control
+- **Three composers** — `compose_lofi_track`, `compose_synthwave_track`, `compose_rainstorm`
+- **`compose_variations`** to spin off N seeded variations of any composer
+- **A music-theory knowledge layer** — scales, chord progressions, cadences, song forms, voice-leading rules, mix-balance reference levels per genre, reference song database
 - **Verified round-trip** between the in-memory model and Waveform's `.tracktionedit` XML
 - **Clip-level fades, gain, offset, automation curves** — proven primitives the LLM can use to iterate musically
 - **Reliable workflow loop** — `compose → write → reload via File → Revert to saved → listen → tweak`
@@ -110,10 +110,12 @@ Four layers, each with a clear contract:
 ### Edit lifecycle (`edit.py`)
 `edit_create` · `edit_open` · `edit_save` · `flush` · `edit_summary` · `edit_inspect` · `undo` · `narrate`
 
-### Tracks + mix (`tracks.py`)
-`track_add` · `track_remove` · `mix_set` · `mix_apply_reference` · `send_add` · `marker_add` · `tempo_set` · `key_set`
+### Tracks + mix + bus routing (`tracks.py`)
+`track_add` · `track_remove` · `mix_set` · `mix_apply_reference` · `send_add` · `marker_add` · `tempo_set` · `key_set` · `bus_create` · `bus_route`
 
 `mix_apply_reference(track_id, genre, role)` looks up the dB target from a curated mix-balance table (`MIX_BALANCE[genre][role]`) — the "kick is the anchor, bass 5-6 dB under" reference distilled into a callable.
+
+`bus_create("Drum Bus")` + `bus_route(kick_track, drum_bus)` lets you stack tracks onto a submix for shared compression / EQ.
 
 ### MIDI (`midi.py`)
 `midi_clip_add` · `midi_notes_add` · `midi_notes_clear` · `midi_clip_quantize`
@@ -128,7 +130,42 @@ Four layers, each with a clear contract:
 `plugin_add_drum_kit` (Sampler-backed, one SOUND per pad)
 `plugin_add_modifier` (LFO / envelope / sidechain — schema TBD on full Waveform support)
 `plugin_discover` (parses `knownPluginList64.settings` to list installed VSTs)
+**EQ + compressor helpers:** `eq_high_pass` · `eq_low_pass` · `eq_tilt` · `compress_glue` · `compress_smash`
 `waveform_preset_list` · `waveform_preset_read` · `waveform_plugin_types`
+
+### Composition primitives (`melody.py`, `drum_patterns.py`, `composition.py`)
+`melody_generate(scale, contour, density)` — rule-based melody from contour shape (arch / descending / wave / question_answer / static)
+`arp_pattern(chord, rate, direction, octaves)` — arpeggio over a chord (up / down / up_down / random / octave_alternate)
+`bassline_generate(roots, feel)` — bass under a progression (pump / walking / half_time / sub / octave_jumps / dub)
+`motif_develop(notes, transformation)` — variations: transpose / invert / retrograde / augment / diminish / sequence_up / sequence_down
+`drum_pattern(genre, role, density, length_bars)` — 50+ named grooves indexed by (genre, role); synthwave, lofi, hip_hop, edm, house, techno, trap, dnb, rock, pop, ambient
+`drum_pattern_list` — show the catalog
+`progression_generate(root, mode, length, end_cadence, style)` — invent chord progressions; styles: pop / jazz / modal / synthwave / sad / uplifting
+`voice_lead(prev_voicing, next_chord)` — minimal-motion voice leading
+`arrangement_plan(genre, target_seconds, energy_curve)` — produce a section list with bars + role + energy 0..1; curves: slow_burn / immediate_hook / build_drop_build / call_response
+
+### Audio analysis (`audio_analysis.py`, `audio_detect.py`)
+`audio_loudness_lufs(file)` — integrated LUFS, true peak, LRA via ffmpeg ebur128
+`audio_spectrum(file, bands=10)` — log-spaced RMS-per-band frequency balance
+`audio_compare(a, b)` — diff LUFS / peak / per-band spectrum between two files
+`audio_detect_tempo(file)` — BPM via onset autocorrelation (~1% accuracy on clear loops)
+`audio_detect_key(file)` — root + mode via Krumhansl-Schmuckler chromagram
+
+### Reference songs (`reference_songs.py`)
+`reference_song_lookup(name)` / `reference_song_list` — curated DB of 11 references across synthwave / pop / house / ambient / lofi (Drive (Kavinsky), Midnight City (M83), Sweet Dreams, Africa, In the Air Tonight, Strobe, Miami, Hide and Seek, Still Alive, generic chillhop, generic outrun) with BPM, key, form hint, energy curve, signature elements.
+
+### Mastering / mix workflow (`workflow.py`)
+`master_chain_apply(template)` — drop-in chains: clean_pop / loud_edm / lofi_warm / cinematic_dynamic / podcast_voice / no_processing
+`snapshot_save(name)` / `snapshot_recall(name)` / `snapshot_list` — A/B compare versions of an Edit
+`edit_transpose(semitones)` — shift all MIDI notes
+`edit_set_tempo(bpm)` — change project tempo
+`compose_variations(composer_name, prefix, count)` — generate N seeded variations of any composer
+`tool_history(last_n)` — list recently-called tools (auto-recorded by the @op decorator)
+`edit_save_stem(track_names, out_path)` — save a stem-mix copy with named tracks soloed
+`edit_export_chord_chart(out_path, format)` — text chord chart from markers + key
+
+### MIDI export (`midi_export.py`)
+`edit_export_midi(out_path)` — Standard MIDI File (format 1) with one track per Edit MIDI track, plus tempo + time-sig in track 0.
 
 ### Automation (`automation.py`)
 `automation_add` · `automation_envelope` · `automation_clear` · `automation_list`

@@ -39,8 +39,6 @@ def op(name: str, intent_template: str | None = None):
             try:
                 result = STORE.apply(name, args, fn)
                 duration_ms = (time.perf_counter() - t0) * 1000.0
-                # diff is already captured by the subscriber, but tool_call
-                # events benefit from a compact summary too
                 tool_call(
                     tool=name,
                     args=args,
@@ -48,6 +46,7 @@ def op(name: str, intent_template: str | None = None):
                     duration_ms=duration_ms,
                     result="ok",
                 )
+                _record_history(name, args, True)
                 return {"ok": True, **(result or {})}
             except Exception as e:
                 duration_ms = (time.perf_counter() - t0) * 1000.0
@@ -59,12 +58,28 @@ def op(name: str, intent_template: str | None = None):
                     result="error",
                     error=str(e),
                 )
+                _record_history(name, args, False, str(e))
                 return {"ok": False, "error": str(e), "type": type(e).__name__}
 
         wrapper._op_name = name  # type: ignore[attr-defined]
         return wrapper
 
     return deco
+
+
+def _record_history(name: str, args: dict, ok: bool, error: str | None = None) -> None:
+    """Push a record into workflow.tool_history if the module is loaded."""
+    try:
+        from . import workflow as _wf  # type: ignore
+        _wf._TOOL_HISTORY.append({
+            "ts": time.time(),
+            "tool": name,
+            "args_keys": sorted(args.keys()) if isinstance(args, dict) else None,
+            "ok": ok,
+            "error": error,
+        })
+    except Exception:
+        pass
 
 
 def _format_intent(template: str | None, args: dict) -> str | None:

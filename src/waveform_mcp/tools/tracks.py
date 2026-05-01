@@ -99,6 +99,20 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "bus_create",
+        "description": "Create a submix / aux track other tracks can route to. kind ∈ {submix, folder}.",
+        "inputSchema": {"type": "object", "required": ["name"],
+                        "properties": {"name": {"type": "string"},
+                                       "kind": {"type": "string", "enum": ["submix", "folder"], "default": "submix"}}},
+    },
+    {
+        "name": "bus_route",
+        "description": "Route a track's output to a bus instead of master. Stack drums onto a 'Drum Bus' for one comp/EQ.",
+        "inputSchema": {"type": "object", "required": ["src_track_id", "dest_bus_id"],
+                        "properties": {"src_track_id": {"type": "string"},
+                                       "dest_bus_id": {"type": "string"}}},
+    },
+    {
         "name": "mix_apply_reference",
         "description": (
             "Set a track's volume_db (and optional pan) to the genre+role "
@@ -195,6 +209,24 @@ def key_set(edit: Edit, root: int, mode: str) -> dict:
     return {}
 
 
+@op("bus_create", intent_template="Create {kind} bus '{name}'")
+def bus_create(edit: Edit, name: str, kind: str = "submix") -> dict:
+    """Create a submix / aux track that other tracks can route into.
+    Use bus_route to set a track's output, or send_add for parallel sends."""
+    t = Track(id=_id("trk"), name=name, kind=kind)  # type: ignore[arg-type]
+    edit.tracks.append(t)
+    return {"track_id": t.id, "kind": kind}
+
+
+@op("bus_route", intent_template="Route {src_track_id} → {dest_bus_id}")
+def bus_route(edit: Edit, src_track_id: str, dest_bus_id: str) -> dict:
+    """Set src_track's output to flow into dest_bus instead of master."""
+    src = edit.track(src_track_id)
+    edit.track(dest_bus_id)  # validate exists
+    src.output = dest_bus_id
+    return {"track_id": src_track_id, "output": dest_bus_id}
+
+
 @op("mix_apply_reference", intent_template="Apply {genre}/{role} mix to {track_id}")
 def mix_apply_reference(
     edit: Edit,
@@ -228,4 +260,6 @@ HANDLERS = {
     "tempo_set": tempo_set,
     "key_set": key_set,
     "mix_apply_reference": mix_apply_reference,
+    "bus_create": bus_create,
+    "bus_route": bus_route,
 }

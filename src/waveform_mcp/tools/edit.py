@@ -76,6 +76,23 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "edit_save_stem",
+        "description": (
+            "Save a stem-mix copy of the current Edit: only named tracks "
+            "audible, all others muted. Pass `track_ids` or `track_names` "
+            "(list). Use in a loop to produce per-track stems for rendering."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["out_path"],
+            "properties": {
+                "out_path":    {"type": "string"},
+                "track_ids":   {"type": "array", "items": {"type": "string"}},
+                "track_names": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    {
         "name": "edit_inspect",
         "description": (
             "Detailed structural dump of the current Edit. Heavier than edit_summary — "
@@ -176,6 +193,36 @@ def edit_summary(args: dict) -> dict:
     return {"ok": True, "summary": STORE.edit.summary()}
 
 
+def edit_save_stem(args: dict) -> dict:
+    """Save a copy of the current Edit as a 'stem' file: muted/soloed so only
+    the named tracks are audible. Use to render individual stems by:
+      1. edit_save_stem(track_names=['Drums'], out_path=...)
+      2. waveform_revert_to_saved (or open the new file in Waveform)
+      3. waveform_render_to_mp3
+      4. Repeat for each stem.
+
+    Pass `track_ids` OR `track_names` (not both). If neither, returns the
+    full edit unchanged.
+    """
+    import copy as _copy
+    from pathlib import Path
+
+    out_path = args["out_path"]
+    track_ids = set(args.get("track_ids", []))
+    track_names = set(args.get("track_names", []))
+
+    edit = _copy.deepcopy(STORE.edit)
+    if track_ids or track_names:
+        for t in edit.tracks:
+            keep = (t.id in track_ids) or (t.name in track_names)
+            t.mute = not keep
+            t.solo = False  # rely on mute-others rather than solo
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    xml_write(edit, out_path)
+    return {"ok": True, "path": out_path,
+            "kept": [t.name for t in edit.tracks if not t.mute]}
+
+
 def edit_inspect(args: dict) -> dict:
     """Detailed structural dump. See tool description for shape."""
     from ..model import AudioClip, MidiClip
@@ -254,6 +301,7 @@ HANDLERS = {
     "edit_create": edit_create,
     "edit_open": edit_open,
     "edit_save": edit_save,
+    "edit_save_stem": edit_save_stem,
     "flush": flush,
     "edit_summary": edit_summary,
     "edit_inspect": edit_inspect,

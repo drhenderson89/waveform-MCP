@@ -95,6 +95,42 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "eq_high_pass",
+        "description": "Add a high-pass filter at `freq` Hz to a track. `slope` is dB/oct (12, 18, 24).",
+        "inputSchema": {"type": "object", "required": ["track_id"],
+                        "properties": {"track_id": {"type": "string"},
+                                       "freq": {"type": "number", "default": 100.0},
+                                       "slope": {"type": "integer", "default": 24}}},
+    },
+    {
+        "name": "eq_low_pass",
+        "description": "Add a lowpass filter at `freq` Hz to a track for darkening/muffling.",
+        "inputSchema": {"type": "object", "required": ["track_id"],
+                        "properties": {"track_id": {"type": "string"},
+                                       "freq": {"type": "number", "default": 8000.0},
+                                       "q": {"type": "number", "default": 0.7}}},
+    },
+    {
+        "name": "eq_tilt",
+        "description": "Single-knob bright/dark EQ. brightness -1=dark, 0=neutral, +1=bright.",
+        "inputSchema": {"type": "object", "required": ["track_id"],
+                        "properties": {"track_id": {"type": "string"},
+                                       "brightness": {"type": "number", "default": 0.0}}},
+    },
+    {
+        "name": "compress_glue",
+        "description": "Gentle bus 'glue' compressor. amount 0..1 (0=barely-there, 1=noticeable).",
+        "inputSchema": {"type": "object", "required": ["track_id"],
+                        "properties": {"track_id": {"type": "string"},
+                                       "amount": {"type": "number", "default": 0.5}}},
+    },
+    {
+        "name": "compress_smash",
+        "description": "Aggressive parallel-style compressor for drum-bus / NY-style smash. No params — preset values.",
+        "inputSchema": {"type": "object", "required": ["track_id"],
+                        "properties": {"track_id": {"type": "string"}}},
+    },
+    {
         "name": "plugin_add_drum_kit",
         "description": (
             "Add a Sampler-backed drum kit to a track. `pads` is a list of "
@@ -315,6 +351,74 @@ def plugin_add_drum_kit(
 # Waveform processes the assignment fully. Track this with a fixture pass.
 
 
+# ---------- EQ + compressor convenience helpers ----------
+
+
+@op("eq_high_pass", intent_template="HP at {freq}Hz on {track_id}")
+def eq_high_pass(edit: Edit, track_id: str, freq: float = 100.0, slope: int = 24) -> dict:
+    """Add a 3 Band EQ configured as a high-pass at the given frequency.
+    `slope` is dB/oct (12, 18, or 24). Implemented via aggressive low-band cut.
+    """
+    t = edit.track(track_id)
+    p = Plugin(id=_id("plg"), type="3 Band EQ", name=f"HP {freq:.0f}",
+               params={"loFreq": float(freq), "loGain": -float(slope),
+                       "midFreq": 1000.0, "midGain": 0.0, "midQ": 0.8,
+                       "hiFreq": 8000.0, "hiGain": 0.0})
+    t.plugins.append(p)
+    return {"track_id": track_id, "plugin_id": p.id}
+
+
+@op("eq_low_pass", intent_template="LP at {freq}Hz on {track_id}")
+def eq_low_pass(edit: Edit, track_id: str, freq: float = 8000.0, q: float = 0.7) -> dict:
+    """Lowpass filter for darkening / muffling effects."""
+    t = edit.track(track_id)
+    p = Plugin(id=_id("plg"), type="Lowpass Filter", name=f"LP {freq:.0f}",
+               params={"frequency": float(freq), "q": float(q)})
+    t.plugins.append(p)
+    return {"track_id": track_id, "plugin_id": p.id}
+
+
+@op("eq_tilt", intent_template="Tilt EQ on {track_id}")
+def eq_tilt(edit: Edit, track_id: str, brightness: float = 0.0) -> dict:
+    """Single-knob bright/dark via 3 Band EQ. brightness ∈ -1..1.
+    Negative tilts darker (boost lows, cut highs), positive tilts brighter."""
+    t = edit.track(track_id)
+    amount = max(-6.0, min(6.0, float(brightness) * 4.0))
+    p = Plugin(id=_id("plg"), type="3 Band EQ", name=f"Tilt {brightness:+.1f}",
+               params={"loFreq": 200.0, "loGain": -amount,
+                       "midFreq": 1000.0, "midGain": 0.0, "midQ": 0.8,
+                       "hiFreq": 6000.0, "hiGain": amount})
+    t.plugins.append(p)
+    return {"track_id": track_id, "plugin_id": p.id}
+
+
+@op("compress_glue", intent_template="Glue comp on {track_id}")
+def compress_glue(edit: Edit, track_id: str, amount: float = 0.5) -> dict:
+    """Single-knob gentle bus compressor. amount ∈ 0..1 → ratio 1.5..4, threshold -8..-12."""
+    a = max(0.0, min(1.0, float(amount)))
+    t = edit.track(track_id)
+    p = Plugin(id=_id("plg"), type="Compressor", name=f"Glue {a:.1f}",
+               params={"threshold": -8.0 - a * 4.0,
+                       "ratio": 1.5 + a * 2.5,
+                       "attack": 25.0, "release": 200.0,
+                       "knee": 8.0, "outputDb": a * 1.5})
+    t.plugins.append(p)
+    return {"track_id": track_id, "plugin_id": p.id}
+
+
+@op("compress_smash", intent_template="Smash comp on {track_id}")
+def compress_smash(edit: Edit, track_id: str) -> dict:
+    """Aggressive parallel-compression-style: -20 threshold, 8:1, fast attack.
+    Use on a duplicate drum bus + blend with the dry."""
+    t = edit.track(track_id)
+    p = Plugin(id=_id("plg"), type="Compressor", name="Smash",
+               params={"threshold": -20.0, "ratio": 8.0,
+                       "attack": 1.0, "release": 80.0,
+                       "knee": 2.0, "outputDb": 4.0})
+    t.plugins.append(p)
+    return {"track_id": track_id, "plugin_id": p.id}
+
+
 @op("plugin_add_modifier", intent_template="Add {modifier_type} modifier to {target_plugin_id}/{target_param}")
 def plugin_add_modifier(
     edit: Edit,
@@ -435,4 +539,9 @@ HANDLERS = {
     "plugin_add_drum_kit": plugin_add_drum_kit,
     "plugin_add_modifier": plugin_add_modifier,
     "plugin_discover": plugin_discover,
+    "eq_high_pass": eq_high_pass,
+    "eq_low_pass": eq_low_pass,
+    "eq_tilt": eq_tilt,
+    "compress_glue": compress_glue,
+    "compress_smash": compress_smash,
 }
