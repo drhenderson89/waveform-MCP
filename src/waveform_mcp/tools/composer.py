@@ -307,6 +307,8 @@ TOOLS: list[dict[str, Any]] = [
                         "common sub-bass-mud issue. Use 0 for a deeper sub-bass."
                     ),
                 },
+                "seed": {"type": "integer", "default": 0,
+                         "description": "Reproducible randomization seed for variation."},
             },
         },
     },
@@ -1050,8 +1052,9 @@ def _total_bars() -> int:
 def compose_lofi_track(args: dict) -> dict:
     out_path = args["out_path"]
     tempo = float(args.get("tempo", 76.0))
-    # Bars are now derived from the arrangement (32 bars total — ~92 seconds at 84 BPM)
-    # Allow override but warn that section structure assumes 32.
+    seed = int(args.get("seed", 0))
+    # Re-seed module-level RNG for variation reproducibility
+    random.seed(seed)
     bars = int(args.get("bars", _total_bars()))
     bass_preset = args.get("bass_preset", DEFAULT_PRESETS["bass"])
     keys_preset = args.get("keys_preset", DEFAULT_PRESETS["keys"])
@@ -1443,6 +1446,7 @@ def compose_rainstorm(args: dict) -> dict:
     """
     out_path = args["out_path"]
     length_seconds = float(args.get("length_seconds", 180.0))
+    seed = int(args.get("seed", 42))
 
     ambience_dir = (
         Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
@@ -1515,7 +1519,7 @@ def compose_rainstorm(args: dict) -> dict:
     # high-cut on the track for the "distant, behind a wall of rain" feel.
     thunder = tracks.track_add({"name": "Thunder", "kind": "audio", "volume_db": 14.0})["track_id"]
 
-    rng = random.Random(42)
+    rng = random.Random(seed)
     # Schedule: roughly one event every 25-45s, with random jitter
     placements: list[tuple[float, Path, float]] = []  # (start_seconds, file, length_seconds)
     t_cursor = 12.0  # first thunder ~12s in (after listener settles into rain)
@@ -1632,6 +1636,8 @@ TOOLS.append({
         "properties": {
             "out_path": {"type": "string"},
             "length_seconds": {"type": "number", "default": 180.0},
+            "seed": {"type": "integer", "default": 42,
+                     "description": "RNG seed for thunder placement variation."},
         },
     },
 })
@@ -2285,6 +2291,8 @@ def compose_synthwave_track(args: dict) -> dict:
     """
     out_path = args["out_path"]
     tempo = float(args.get("tempo", 110.0))
+    seed = int(args.get("seed", 0))
+    random.seed(seed)
     bars = sum(s["bars"] for s in SYNTHWAVE_ARRANGEMENT)  # 64
 
     # Chord progressions are per-section (verse / chorus / bridge), defined
@@ -2629,6 +2637,329 @@ TOOLS.append({
         "properties": {
             "out_path": {"type": "string"},
             "tempo": {"type": "number", "default": 110.0},
+            "seed": {"type": "integer", "default": 0,
+                     "description": "RNG seed for variation reproducibility."},
+        },
+    },
+})
+
+
+# ============================================================================
+# Generic primitive-based composer — the "this is what the architecture
+# unlocks" demonstration. Plans an arrangement, generates a chord
+# progression, voices it with voice-leading, then for each section calls
+# drum_pattern + bassline_generate + arp_pattern + melody_generate +
+# motif_develop. Can produce any genre our drum library supports.
+# ============================================================================
+
+
+def compose_from_primitives(args: dict) -> dict:
+    """Build a song bottom-up from composition primitives. Demonstrates the
+    full T1 stack: arrangement_plan → progression_generate → voice_lead →
+    drum_pattern → bassline_generate → arp_pattern → melody_generate +
+    motif_develop. Sections drive velocity scaling via their `energy` value
+    from arrangement_plan.
+
+    The result is intentionally simpler-sounding than compose_synthwave_track
+    (which has hand-tuned details) — this composer is about being a clear,
+    short, primitive-driven REFERENCE for how the LLM should build songs.
+    """
+    out_path = args["out_path"]
+    genre = args.get("genre", "synthwave")
+    target_seconds = float(args.get("target_seconds", 100.0))
+    tempo = float(args.get("tempo", 110.0))
+    root = args.get("root", "A")
+    mode = args.get("mode", "natural_minor")
+    energy_curve = args.get("energy_curve", "slow_burn")
+    seed = int(args.get("seed", 0))
+    random.seed(seed)
+
+    from . import composition as comp_tools
+    from . import melody as melody_tools
+    from . import drum_patterns as drum_tools
+    from .. import music_theory_data as data
+
+    # 1) Plan the arrangement
+    plan = comp_tools.arrangement_plan({
+        "genre": genre, "target_length_seconds": target_seconds,
+        "tempo": tempo, "energy_curve": energy_curve,
+    })
+    sections = plan["sections"]
+    total_bars = plan["total_bars"]
+
+    # 2) Generate ONE chord progression and re-use it across the song
+    n_chords = 4
+    prog = comp_tools.progression_generate({
+        "root": root, "mode": mode, "length_chords": n_chords,
+        "style": "synthwave" if genre == "synthwave" else "pop",
+        "end_cadence": "authentic", "octave": 3, "seed": seed,
+    })
+    chords = prog["chords"]
+    bass_roots = [c["root_midi"] for c in chords]
+
+    # Voice-lead the chord voicings so pad motion is smooth
+    voicings: list[list[int]] = []
+    initial_voicing = [chords[0]["chord_pitches"][0] + 12,    # tonic up an octave
+                       chords[0]["chord_pitches"][1] + 12,
+                       chords[0]["chord_pitches"][2] + 12,
+                       chords[0]["chord_pitches"][2] + 24]   # 5th two octaves up for top voice
+    voicings.append(initial_voicing)
+    for c in chords[1:]:
+        led = comp_tools.voice_lead({"prev_voicing": voicings[-1],
+                                     "next_chord": c["chord_pitches"]})
+        voicings.append(led["voicing"])
+
+    # 3) Create the edit
+    edit_tools.edit_create({
+        "name": f"Primitive {genre.title()}",
+        "tempo": tempo, "time_sig_num": 4, "time_sig_denom": 4,
+        "key_root": NOTE_NAMES_MAP.get(root, 0),
+        "key_mode": "minor" if "minor" in mode else "major",
+        "length_beats": total_bars * 4 + 4,
+    })
+
+    # 4) Section markers (free quality-of-life)
+    section_starts: dict[str, int] = {}
+    cursor = 0
+    for s in sections:
+        section_starts[s["name"]] = cursor
+        tracks.marker_add({"name": s["name"],
+                           "start_beats": float(cursor * 4),
+                           "length_beats": float(s["bars"] * 4)})
+        cursor += s["bars"]
+
+    # 4b) Populate Edit.progression so chord-chart export works.
+    # Each section repeats the progression once across its bars.
+    from ..model import ChordSymbol
+    progression: list[ChordSymbol] = []
+    for s in sections:
+        sec_start_beat = section_starts[s["name"]] * 4
+        chord_dur_beats = (s["bars"] * 4) / len(chords)
+        for ci, c in enumerate(chords):
+            chord_pc = c["root_midi"] % 12
+            note_letter = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][chord_pc]
+            chord_name = note_letter + ("m" if c["quality"].startswith("min") else
+                                         "" if c["quality"].startswith("maj") else "°")
+            progression.append(ChordSymbol(
+                name=chord_name, roman=c["roman"],
+                start_beats=float(sec_start_beat + ci * chord_dur_beats),
+                length_beats=float(chord_dur_beats),
+                root_midi=c["root_midi"],
+            ))
+    STORE.edit.progression = progression
+
+    # 5) Drums — one drum_pattern call per section
+    drums = tracks.track_add({"name": "Drums", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": drums, "type": "Sampler", "name": "Kit"})
+    drum_track = next(t for t in STORE.edit.tracks if t.id == drums)
+    drum_track.plugins[-1].sounds = _drum_kit_sounds()
+    drum_clip = midi.midi_clip_add({"track_id": drums, "name": "Drums",
+                                    "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    drum_notes: list[dict] = []
+    for s in sections:
+        # Map section role to drum-library role
+        drum_role = s["role"] if s["role"] in ("verse", "chorus", "buildup",
+                                                "breakdown", "outro", "intro") else "verse"
+        if s["role"] == "intro":
+            continue   # let intro be drumless; drums kick in at first verse
+        if s["role"] == "outro":
+            continue
+        ds = drum_tools.drum_pattern({
+            "genre": genre, "role": drum_role, "length_bars": s["bars"],
+            "density": s["energy"],
+            "start_beats": float(section_starts[s["name"]] * 4),
+            "humanize": True, "seed": seed,
+        })
+        drum_notes.extend(ds["notes"])
+    midi.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
+
+    # 6) Bass — one bassline_generate call per section
+    bass = tracks.track_add({"name": "Bass", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": bass, "type": "4OSC", "name": "Bass"})
+    _apply_preset_to_track(bass, "4OSC", "4OSC Smack Bass WMF.trkpreset",
+                           overrides={"tune1": 0.0, "ampSustain": 70.0,
+                                      "filterFreq": 100.0, "filterAmount": 0.5,
+                                      "masterLevel": 0.0})
+    bass_clip = midi.midi_clip_add({"track_id": bass, "name": "Bass",
+                                    "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    bass_notes: list[dict] = []
+    for s in sections:
+        if s["role"] in ("intro", "outro", "breakdown"):
+            continue
+        # Choose feel based on role — verse half-time, chorus pump, bridge walking
+        feel_map = {"verse": "half_time", "chorus": "pump",
+                     "bridge": "walking", "buildup": "pump",
+                     "prechorus": "pump", "drop": "pump"}
+        feel = feel_map.get(s["role"], "pump")
+        bs = melody_tools.bassline_generate({
+            "roots": bass_roots,
+            "chord_duration_beats": (s["bars"] * 4) / len(bass_roots),
+            "feel": feel,
+            "start_beats": float(section_starts[s["name"]] * 4),
+            "scale_intervals": data.SCALES.get(mode, data.SCALES["major"]),
+        })
+        bass_notes.extend(bs["notes"])
+    midi.midi_notes_add({"clip_id": bass_clip, "notes": bass_notes})
+
+    # 7) Pad — voiced chords sustained per section
+    pad = tracks.track_add({"name": "Pad", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": pad, "type": "4OSC", "name": "Pad"})
+    _apply_preset_to_track(pad, "4OSC", "4OSC Vox Pad WMF.trkpreset",
+                           overrides={"ampAttack": 0.5, "ampRelease": 1.5,
+                                      "filterFreq": 92.0, "filterAmount": 0.3,
+                                      "masterLevel": 1.0})
+    pad_clip = midi.midi_clip_add({"track_id": pad, "name": "Pad",
+                                   "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    pad_notes: list[dict] = []
+    for s in sections:
+        sec_start_bar = section_starts[s["name"]]
+        chord_dur_bars = s["bars"] / len(voicings)
+        for ci, voicing in enumerate(voicings):
+            t = float((sec_start_bar + ci * chord_dur_bars) * 4)
+            length = float(chord_dur_bars * 4 - 0.05)
+            for pitch in voicing:
+                pad_notes.append({"pitch": pitch, "start_beats": t,
+                                  "length_beats": length,
+                                  "velocity": int(60 + 20 * s["energy"])})
+    midi.midi_notes_add({"clip_id": pad_clip, "notes": pad_notes})
+
+    # 8) Arp — chorus-style sections only
+    arp = tracks.track_add({"name": "Arp", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": arp, "type": "4OSC", "name": "Arp"})
+    _apply_preset_to_track(arp, "4OSC", "4OSC Bell Pad WMF.trkpreset",
+                           overrides={"ampAttack": 0.001, "ampDecay": 0.18,
+                                      "ampSustain": 0.0, "ampRelease": 0.25,
+                                      "filterFreq": 110.0, "filterAmount": 0.45,
+                                      "waveShape1": 3, "tune1": 12.0,
+                                      "chorusOn": 1, "chorusMix": 0.5})
+    plugins.plugin_add_reverb({"track_id": arp, "type": "plate",
+                                "size": 0.5, "decay": 0.4, "mix": 0.25})
+    arp_clip = midi.midi_clip_add({"track_id": arp, "name": "Arp",
+                                   "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    arp_notes: list[dict] = []
+    for s in sections:
+        if s["role"] not in ("chorus", "drop", "buildup"):
+            continue
+        sec_start_bar = section_starts[s["name"]]
+        chord_dur_bars = s["bars"] / len(voicings)
+        for ci, voicing in enumerate(voicings):
+            ap = melody_tools.arp_pattern({
+                "chord_pitches": voicing,
+                "length_beats": chord_dur_bars * 4,
+                "rate": "sixteenth", "direction": "up_down", "octaves": 2,
+                "start_beats": float((sec_start_bar + ci * chord_dur_bars) * 4),
+                "velocity_base": int(60 + 20 * s["energy"]),
+                "accent_downbeats": True,
+            })
+            arp_notes.extend(ap["notes"])
+    midi.midi_notes_add({"clip_id": arp_clip, "notes": arp_notes})
+
+    # 9) Lead melody — peak section only, with motif development.
+    # Build one motif, repeat with augment/transpose variations across the
+    # peak section.
+    peak_section = next((s for s in sections if s["role"] in ("chorus", "drop")
+                         and s["energy"] >= 0.85), None)
+    if peak_section:
+        lead = tracks.track_add({"name": "Lead", "kind": "midi"})["track_id"]
+        plugins.plugin_add({"track_id": lead, "type": "4OSC", "name": "Lead"})
+        _apply_preset_to_track(lead, "4OSC", "4OSC Bell Pad WMF.trkpreset",
+                               overrides={"ampAttack": 0.02, "ampDecay": 0.3,
+                                          "ampSustain": 75.0, "ampRelease": 0.5,
+                                          "filterFreq": 110.0, "filterAmount": 0.55,
+                                          "waveShape1": 2, "tune1": 0.0,
+                                          "chorusOn": 1, "chorusMix": 0.4})
+        plugins.plugin_add_reverb({"track_id": lead, "type": "plate",
+                                    "size": 0.55, "decay": 0.45, "mix": 0.30})
+        lead_clip = midi.midi_clip_add({"track_id": lead, "name": "Lead",
+                                        "start_beats": 0,
+                                        "length_beats": total_bars * 4})["clip_id"]
+        # Build a 2-bar motif around the chord's 5th, two octaves up
+        motif_root = chords[0]["root_midi"] + 24
+        motif = melody_tools.melody_generate({
+            "root": root, "mode": mode, "length_beats": 8.0,
+            "contour": "arch", "density": "medium",
+            "register_octave": 5, "seed": seed,
+        })["notes"]
+        # Repeat motif across peak section with variations
+        peak_start = section_starts[peak_section["name"]]
+        lead_notes: list[dict] = []
+        for rep in range(peak_section["bars"] // 2):
+            t_offset = float((peak_start + rep * 2) * 4)
+            if rep == 0:
+                shifted = [{**n, "start_beats": n["start_beats"] + t_offset} for n in motif]
+            elif rep == 1:
+                # Sequence up
+                shifted = melody_tools.motif_develop({
+                    "notes": motif, "transformation": "sequence_up",
+                    "semitones": 2, "offset_beats": t_offset,
+                })["notes"][:len(motif)]   # take only first half
+            elif rep % 2 == 0:
+                shifted = melody_tools.motif_develop({
+                    "notes": motif, "transformation": "transpose",
+                    "semitones": 0, "offset_beats": t_offset,
+                })["notes"]
+            else:
+                shifted = melody_tools.motif_develop({
+                    "notes": motif, "transformation": "invert",
+                    "axis_pitch": motif[0]["pitch"], "offset_beats": t_offset,
+                })["notes"]
+            lead_notes.extend(shifted)
+        midi.midi_notes_add({"clip_id": lead_clip, "notes": lead_notes})
+
+    # 10) Mix balance via reference table
+    tracks.mix_apply_reference({"track_id": drums, "genre": genre, "role": "drums"})
+    tracks.mix_apply_reference({"track_id": bass,  "genre": genre, "role": "bass"})
+    tracks.mix_apply_reference({"track_id": pad,   "genre": genre, "role": "pad", "pan": -0.10})
+    tracks.mix_apply_reference({"track_id": arp,   "genre": genre, "role": "arp", "pan":  0.15})
+    if peak_section:
+        tracks.mix_apply_reference({"track_id": lead, "genre": genre, "role": "lead"})
+
+    # 11) Master chain via template
+    from . import workflow as wf_tools
+    wf_tools.master_chain_apply({"template": "clean_pop"})
+
+    # Save
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    edit_tools.edit_save({"path": out_path})
+    summary = STORE.edit.summary()
+
+    return {
+        "ok": True, "path": out_path,
+        "tempo": tempo, "bars": total_bars,
+        "tracks": [t["name"] for t in summary["tracks"]],
+        "total_notes": sum((c.get("note_count") or 0) for t in summary["tracks"] for c in t.get("clips", [])),
+        "progression": [c["roman"] for c in chords],
+        "sections": [{"name": s["name"], "bars": s["bars"], "energy": s["energy"]} for s in sections],
+    }
+
+
+NOTE_NAMES_MAP = {"C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4,
+                  "F": 5, "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8,
+                  "A": 9, "A#": 10, "Bb": 10, "B": 11}
+
+
+TOOLS.append({
+    "name": "compose_from_primitives",
+    "description": (
+        "Build a song bottom-up from composition primitives — the recipe "
+        "demonstrating arrangement_plan + progression_generate + voice_lead "
+        "+ drum_pattern + bassline_generate + arp_pattern + melody_generate "
+        "+ motif_develop wired together. Genre selects drum patterns, bass "
+        "feels, and mix-balance reference. energy_curve drives velocity "
+        "scaling per section."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "required": ["out_path"],
+        "properties": {
+            "out_path":       {"type": "string"},
+            "genre":          {"type": "string", "default": "synthwave"},
+            "target_seconds": {"type": "number", "default": 100.0},
+            "tempo":          {"type": "number", "default": 110.0},
+            "root":           {"type": "string", "default": "A"},
+            "mode":           {"type": "string", "default": "natural_minor"},
+            "energy_curve":   {"type": "string", "default": "slow_burn"},
+            "seed":           {"type": "integer", "default": 0},
         },
     },
 })
@@ -2638,4 +2969,5 @@ HANDLERS = {
     "compose_lofi_track": compose_lofi_track,
     "compose_rainstorm": compose_rainstorm,
     "compose_synthwave_track": compose_synthwave_track,
+    "compose_from_primitives": compose_from_primitives,
 }

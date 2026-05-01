@@ -78,6 +78,18 @@ class Marker:
     length_beats: float = 0.0
 
 
+@dataclass
+class ChordSymbol:
+    """A chord placed on the timeline. Used by chord-chart export and
+    written by composers that know what chord they're playing.
+    """
+    name: str               # 'Am', 'Cmaj7', 'F/A', etc.
+    roman: str              # 'i', 'IV', 'bVI', 'V7'
+    start_beats: float
+    length_beats: float
+    root_midi: int = 0      # informational
+
+
 # ---------- automation ----------
 
 
@@ -184,6 +196,7 @@ class Edit:
     tracks: list[Track] = field(default_factory=list)
     markers: list[Marker] = field(default_factory=list)
     master_chain: list[Plugin] = field(default_factory=list)
+    progression: list[ChordSymbol] = field(default_factory=list)
 
     # ---- lookup helpers (read-only) ----
 

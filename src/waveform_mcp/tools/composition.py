@@ -293,29 +293,75 @@ def _degree_to_roman(degree: int, quality: str, borrowed: bool) -> str:
 
 
 def voice_lead(args: dict) -> dict:
-    """For each note in prev_voicing, find the closest pitch in next_chord
-    (in any octave) such that voice motion is minimized. Pure greedy
-    nearest-pitch — sufficient for most pop/synthwave use.
+    """Voice the next chord with smart voice leading. Constraints:
+      1. Each voice moves to the nearest pitch with one of the next chord's
+         pitch classes (greedy minimal motion).
+      2. NO VOICE CROSSING — voice ordering preserved (bass < tenor < alto < soprano).
+      3. AVOID PARALLEL FIFTHS / OCTAVES with the bass voice when possible.
+
+    Algorithm: enumerate all assignments (target pitch classes × octave choices
+    per voice), score each by (motion_cost + crossing_penalty + parallel_penalty),
+    pick the lowest-score assignment.
+
+    For 4-voice voicings this is fast (256 candidates per voice → 256^4=4.3B
+    is too much; we prune by limiting to ±2 octaves per voice → ~5^4=625
+    candidate sets).
     """
     prev = list(args["prev_voicing"])
     target_pcs = sorted({p % 12 for p in args["next_chord"]})
+    n_voices = len(prev)
 
-    new_voicing: list[int] = []
+    # Build candidate pitches per voice: closest pitches in any target PC
+    # within ±2 octaves of the original voice pitch
+    voice_candidates: list[list[int]] = []
     for old in prev:
-        # Find the closest pitch with a target pitch class
-        best_pitch = old
-        best_dist = 999
+        cands: list[int] = []
         for pc in target_pcs:
-            # Try octaves near the original
             for oct_shift in range(-2, 3):
-                candidate_octave_base = (old // 12) + oct_shift
-                candidate = candidate_octave_base * 12 + pc
-                dist = abs(candidate - old)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_pitch = candidate
-        new_voicing.append(best_pitch)
-    return {"ok": True, "voicing": new_voicing}
+                candidate = ((old // 12) + oct_shift) * 12 + pc
+                cands.append(candidate)
+        # Keep distinct, sorted by distance from old
+        cands = sorted(set(cands), key=lambda p: abs(p - old))
+        # Top-6 closest per voice — keeps the search small
+        voice_candidates.append(cands[:6])
+
+    def score(assignment: list[int]) -> float:
+        motion = sum(abs(assignment[i] - prev[i]) for i in range(n_voices))
+        # Voice crossing: penalize if assignment doesn't preserve the
+        # ordering of `prev`. We compare adjacent pairs.
+        crossing = 0
+        for i in range(n_voices - 1):
+            prev_lo, prev_hi = prev[i], prev[i + 1]
+            new_lo, new_hi = assignment[i], assignment[i + 1]
+            if prev_lo <= prev_hi and new_lo > new_hi:
+                crossing += 50   # heavy penalty
+            if prev_lo >= prev_hi and new_lo < new_hi:
+                crossing += 50
+        # Parallel-fifths/octaves penalty between bass (voice 0) and any other
+        parallel = 0
+        if n_voices >= 2:
+            bass_motion = assignment[0] - prev[0]
+            for j in range(1, n_voices):
+                voice_motion = assignment[j] - prev[j]
+                if bass_motion == voice_motion and bass_motion != 0:
+                    # Same direction & magnitude — check if interval is fifth or octave
+                    interval_prev = (prev[j] - prev[0]) % 12
+                    interval_new = (assignment[j] - assignment[0]) % 12
+                    if interval_prev == interval_new and interval_prev in (0, 7):
+                        parallel += 8
+        return motion + crossing + parallel
+
+    # Enumerate assignments via Cartesian product (limited search space)
+    import itertools
+    best: list[int] = list(prev)
+    best_score = float("inf")
+    for combo in itertools.product(*voice_candidates):
+        s = score(list(combo))
+        if s < best_score:
+            best_score = s
+            best = list(combo)
+
+    return {"ok": True, "voicing": best, "score": best_score}
 
 
 # ---------- arrangement planner ----------

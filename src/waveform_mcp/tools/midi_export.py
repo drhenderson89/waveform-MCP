@@ -32,6 +32,22 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def _gm_program_for(track_name: str) -> int | None:
+    """Heuristic GM program-change selection from track name."""
+    n = (track_name or "").lower()
+    if "drum" in n or "kit" in n or "perc" in n: return None  # drums use chan 10 normally; we still leave program out
+    if "bass" in n: return 38   # synth bass 1
+    if "lead" in n: return 80   # square lead
+    if "arp" in n: return 81    # saw lead
+    if "pad" in n: return 90    # warm pad
+    if "key" in n or "rhodes" in n or "epiano" in n or "piano" in n: return 4   # electric piano
+    if "counter" in n or "string" in n: return 48  # string ensemble
+    if "melody" in n or "marimba" in n: return 12  # marimba
+    if "guitar" in n: return 27  # clean electric
+    if "organ" in n: return 16
+    return 0   # acoustic grand
+
+
 def _vlq(n: int) -> bytes:
     """Variable-length quantity encoding for MIDI delta-times."""
     if n == 0:
@@ -97,13 +113,19 @@ def edit_export_midi(args: dict) -> dict:
     tempo_track_events.sort(key=lambda x: x[0])
     tempo_track_chunk = _build_track(tempo_track_events, "Tempo")
 
-    # One track per MIDI track in the Edit
+    # One track per MIDI track in the Edit, with a Program Change at tick 0
+    # picked from the track name — gives the receiving DAW a sensible starting
+    # patch instead of every track being a piano.
     instrument_track_chunks: list[bytes] = []
     for ti, t in enumerate(edit.tracks):
         if not any(isinstance(c, MidiClip) for c in t.clips):
             continue
         events: list[tuple[int, bytes]] = []
         channel = ti % 16
+        # GM Program Change picked from track name (heuristic match)
+        program = _gm_program_for(t.name)
+        if program is not None:
+            events.append((0, bytes([0xC0 | channel, program & 0x7F])))
         for c in t.clips:
             if not isinstance(c, MidiClip):
                 continue
@@ -113,7 +135,7 @@ def edit_export_midi(args: dict) -> dict:
                 end   = start + max(1, int(n.length_beats * ticks_per_qn))
                 events.append((start, bytes([0x90 | channel, n.pitch & 0x7F, n.velocity & 0x7F])))
                 events.append((end,   bytes([0x80 | channel, n.pitch & 0x7F, 0])))
-        events.sort(key=lambda x: x[0])
+        events.sort(key=lambda x: (x[0], 0 if x[1][0] & 0xF0 == 0xC0 else 1))
         instrument_track_chunks.append(_build_track(events, t.name))
 
     # File header — format 1, ntrks = 1 + instrument tracks

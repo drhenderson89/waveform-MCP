@@ -259,14 +259,8 @@ def compose_variations(args: dict) -> dict:
     for i in range(count):
         out_path = f"{prefix}_v{i+1}.tracktionedit"
         call_args = {**extra, "out_path": out_path, "seed": 1000 + i}
-        try:
-            res = composer_fn(call_args)
-            paths.append(res.get("path", out_path))
-        except TypeError:
-            # composer doesn't accept seed; retry without
-            call_args.pop("seed", None)
-            res = composer_fn(call_args)
-            paths.append(res.get("path", out_path))
+        res = composer_fn(call_args)
+        paths.append(res.get("path", out_path))
     return {"ok": True, "paths": paths, "count": len(paths)}
 
 
@@ -285,14 +279,41 @@ def edit_export_chord_chart(args: dict) -> dict:
     lines.append(f"=== {edit.name} ===")
     lines.append(f"Tempo: {edit.tempo:.0f} BPM   Time: {edit.time_sig_num}/{edit.time_sig_denom}   Key: {key_name}")
     lines.append("")
-    if edit.markers:
+
+    # Use Edit.progression if populated; otherwise fall back to markers only.
+    if edit.progression:
+        # Bar-grid layout: 4 chords per line, separated by " | ", with
+        # section labels inserted from markers when their start beat aligns.
+        marker_at: dict[int, str] = {int(round(m.start_beats)): m.name
+                                      for m in edit.markers}
+        # Group chords into bars
+        beats_per_bar = edit.time_sig_num
+        # Use chord name + roman in lead sheet, just roman in nashville
+        line_chords: list[str] = []
+        for c in edit.progression:
+            label = c.name if fmt == "lead_sheet" else c.roman
+            beat = int(round(c.start_beats))
+            if beat in marker_at:
+                # Flush current line + insert section header
+                if line_chords:
+                    lines.append(" | ".join(line_chords))
+                    line_chords = []
+                lines.append("")
+                lines.append(f"[ {marker_at[beat].upper()} ]")
+            line_chords.append(label.ljust(8))
+            if len(line_chords) == 4:
+                lines.append(" | ".join(line_chords))
+                line_chords = []
+        if line_chords:
+            lines.append(" | ".join(line_chords))
+    elif edit.markers:
+        lines.append("(no chord progression stored; section markers only)")
+        lines.append("")
         for m in edit.markers:
             lines.append(f"[{m.start_beats:6.1f}]  {m.name}  ({m.length_beats:.0f} beats)")
     else:
-        lines.append("(no section markers; add via marker_add)")
-    lines.append("")
-    if fmt == "nashville":
-        lines.append("Nashville notation: chord roots shown as scale-degree numbers.")
+        lines.append("(no progression or markers; populate via composer or progression_generate)")
+
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

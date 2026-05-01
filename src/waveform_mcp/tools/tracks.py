@@ -220,11 +220,18 @@ def bus_create(edit: Edit, name: str, kind: str = "submix") -> dict:
 
 @op("bus_route", intent_template="Route {src_track_id} → {dest_bus_id}")
 def bus_route(edit: Edit, src_track_id: str, dest_bus_id: str) -> dict:
-    """Set src_track's output to flow into dest_bus instead of master."""
+    """Set src_track's output to flow into dest_bus instead of master.
+
+    NOTE: This sets `Track.output` in the model, but the XML writer does not
+    yet emit a routing element Tracktion reads. Awaits a hand-edited fixture
+    of a real Waveform project with bus routing — the schema is unknown.
+    Until then, calling this is a no-op at render time.
+    """
     src = edit.track(src_track_id)
     edit.track(dest_bus_id)  # validate exists
     src.output = dest_bus_id
-    return {"track_id": src_track_id, "output": dest_bus_id}
+    return {"track_id": src_track_id, "output": dest_bus_id,
+            "warning": "model-only routing; XML emission needs a Waveform fixture to capture the schema"}
 
 
 @op("mix_apply_reference", intent_template="Apply {genre}/{role} mix to {track_id}")

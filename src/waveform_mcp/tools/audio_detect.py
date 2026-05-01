@@ -98,41 +98,46 @@ def audio_detect_tempo(args: dict) -> dict:
     bpm_max = float(args.get("bpm_max", 180))
 
     try:
+        import numpy as np  # type: ignore
+    except ImportError:
+        return {"ok": False, "error": "numpy required"}
+
+    try:
         samples, sr = _decode_to_mono_pcm(path, sample_rate=22050)
     except Exception as e:
         return {"ok": False, "error": f"decode failed: {e}"}
 
-    # Simple onset envelope: |sample| smoothed at 100 Hz frame rate
-    frame_size = int(sr / 100)   # 10 ms frames
-    n_frames = len(samples) // frame_size
-    env = []
-    for f in range(n_frames):
-        chunk = samples[f * frame_size:(f + 1) * frame_size]
-        env.append(sum(abs(s) for s in chunk) / len(chunk) if chunk else 0.0)
+    arr = np.asarray(samples, dtype=np.float32)
 
-    # Onset by half-wave-rectified diff
-    onsets = [max(0.0, env[i] - env[i - 1]) for i in range(1, len(env))]
+    # Onset envelope at 100 Hz frame rate
+    frame_size = sr // 100
+    n_frames = len(arr) // frame_size
+    if n_frames < 50:
+        return {"ok": False, "error": "audio too short"}
+    env = np.abs(arr[:n_frames * frame_size].reshape(n_frames, frame_size)).mean(axis=1)
 
-    # Autocorrelation across lags 1..N
-    # frame rate = 100/sec → BPM B has period 60/B seconds = 6000/B frames
-    if not onsets:
+    # Half-wave-rectified diff
+    onsets = np.maximum(0.0, np.diff(env))
+    if onsets.sum() <= 0:
         return {"ok": False, "error": "no audio energy"}
-    best_bpm = 0.0
-    best_score = -1e9
-    for bpm in range(int(bpm_min), int(bpm_max) + 1):
-        lag = int(round(6000.0 / bpm))
+
+    # Autocorrelation across BPM range. fps=100 → period in frames = 6000/bpm
+    bpms = np.arange(int(bpm_min), int(bpm_max) + 1)
+    scores = np.zeros_like(bpms, dtype=np.float64)
+    for i, bpm in enumerate(bpms):
+        lag = int(round(6000.0 / float(bpm)))
         if lag <= 0 or lag >= len(onsets):
             continue
-        # Sum onset[i] * onset[i+lag]
-        n = len(onsets) - lag
-        s = sum(onsets[i] * onsets[i + lag] for i in range(0, n, 4))  # decimate for speed
-        if s > best_score:
-            best_score = s
-            best_bpm = float(bpm)
+        scores[i] = float(np.sum(onsets[:-lag] * onsets[lag:]))
 
-    # Confidence: relative to score range
-    return {"ok": True, "file": path, "bpm": best_bpm,
-            "confidence": min(1.0, best_score / max(1e-9, sum(onsets) ** 2 / len(onsets) / 4))}
+    best_idx = int(np.argmax(scores))
+    best_bpm = float(bpms[best_idx])
+    best_score = float(scores[best_idx])
+    # Confidence from score peak relative to mean
+    mean = scores.mean() or 1e-9
+    confidence = min(1.0, max(0.0, (best_score / mean - 1.0) / 5.0))
+
+    return {"ok": True, "file": path, "bpm": best_bpm, "confidence": confidence}
 
 
 # Krumhansl-Schmuckler key profiles (correlation against pitch-class histogram)

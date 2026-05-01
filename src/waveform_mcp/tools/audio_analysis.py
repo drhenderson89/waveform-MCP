@@ -105,60 +105,94 @@ def audio_loudness_lufs(args: dict) -> dict:
         capture_output=True, text=True,
     )
     out = res.stderr  # ffmpeg writes filter output to stderr
-    # Parse final summary block
-    integrated = re.search(r"Integrated loudness:\s*\n\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", out)
-    lra = re.search(r"Loudness range:\s*\n\s*LRA:\s*(-?\d+(?:\.\d+)?)\s*LU", out)
-    peak = re.search(r"True peak:\s*\n\s*Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", out)
+    # ebur128 emits TWO Summary blocks: an initial one at frame-0 (-70 LUFS,
+    # nothing processed yet) and the real one at end-of-stream. Take the LAST
+    # match of each pattern.
+    def _last(pattern: str) -> float | None:
+        ms = list(re.finditer(pattern, out))
+        return float(ms[-1].group(1)) if ms else None
+
+    integrated = _last(r"Integrated loudness:\s*\n\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS")
+    lra        = _last(r"Loudness range:\s*\n\s*LRA:\s*(-?\d+(?:\.\d+)?)\s*LU")
+    peak       = _last(r"True peak:\s*\n\s*Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS")
 
     return {
         "ok": True,
         "file": path,
-        "integrated_lufs": float(integrated.group(1)) if integrated else None,
-        "lra": float(lra.group(1)) if lra else None,
-        "true_peak_dbfs": float(peak.group(1)) if peak else None,
+        "integrated_lufs": integrated,
+        "lra": lra,
+        "true_peak_dbfs": peak,
     }
 
 
 def audio_spectrum(args: dict) -> dict:
-    """RMS per band. Approach: use ffmpeg's `astats` per a `aresample → split
-    → bandpass per-band → astats` chain, but that's complex. Simpler: use
-    ebur128 + biquad bandpasses in a loop.
+    """Log-spaced RMS-per-band frequency balance.
 
-    For pragmatism, we use a single ffmpeg run with astats on each of N
-    bandpass-filtered streams. Returns dB RMS per band.
+    Implementation: single ffmpeg call to decode to mono PCM at 22050 Hz, then
+    one numpy rfft per windowed frame, accumulate magnitude into log-spaced
+    bands. ~50× faster than the previous one-ffmpeg-per-band approach.
     """
+    import math
+    import wave
     path = args["file_path"]
     if not Path(path).exists():
         return {"ok": False, "error": f"file not found: {path}"}
     n_bands = int(args.get("bands", 10))
-    ff = _ffmpeg_path()
 
-    # Log-spaced band centers from 60 Hz to 16 kHz
-    import math
+    try:
+        import numpy as np  # type: ignore
+    except ImportError:
+        return {"ok": False, "error": "numpy required for audio_spectrum"}
+
+    # Decode to mono 16-bit PCM @ 22050 Hz
+    ff = _ffmpeg_path()
+    out_wav = Path(path).with_suffix(".__spec.wav")
+    try:
+        subprocess.run(
+            [ff, "-y", "-i", path, "-ac", "1", "-ar", "22050",
+             "-c:a", "pcm_s16le", str(out_wav)],
+            capture_output=True, check=True,
+        )
+        with wave.open(str(out_wav), "rb") as w:
+            n = w.getnframes()
+            sw = w.getsampwidth()
+            sr = w.getframerate()
+            raw = w.readframes(n)
+    finally:
+        out_wav.unlink(missing_ok=True)
+    samples = np.frombuffer(raw[:n*sw], dtype=np.int16).astype(np.float32) / 32768.0
+
+    # Log-spaced band centers + edges
     f_min, f_max = 60.0, 16000.0
     centers = [f_min * (f_max / f_min) ** (i / (n_bands - 1)) for i in range(n_bands)]
-    # Q so adjacent bands meet at -3 dB ≈ 0.7 octave width per band
-    q = 1.4
+    edges = [centers[0] * 0.7] + [(centers[i] * centers[i+1]) ** 0.5 for i in range(n_bands - 1)] + [centers[-1] * 1.4]
 
-    # Build a filter graph: split into N copies, bandpass each, astats each.
-    # We'll stitch the per-band RMS from stderr.
-    # To keep parsing simple, run one band at a time.
+    fft_size = 4096
+    hop = 2048
+    window = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(fft_size) / fft_size)
+
+    # Accumulator per band
+    band_energy = [0.0] * n_bands
+    band_count = 0
+    for start in range(0, len(samples) - fft_size, hop):
+        frame = samples[start:start + fft_size] * window
+        spec = np.abs(np.fft.rfft(frame))   # shape (fft_size/2+1,)
+        # Bin frequencies
+        for b in range(n_bands):
+            lo, hi = edges[b], edges[b + 1]
+            lo_bin = int(lo * fft_size / sr)
+            hi_bin = int(hi * fft_size / sr)
+            if hi_bin > lo_bin:
+                band_energy[b] += float(np.sum(spec[lo_bin:hi_bin] ** 2))
+        band_count += 1
+
     rms_db: list[float] = []
-    for f in centers:
-        res = subprocess.run(
-            [ff, "-nostats", "-i", path,
-             "-af", f"bandpass=f={f}:width_type=q:w={q},astats=metadata=1:reset=0",
-             "-f", "null", "-"],
-            capture_output=True, text=True,
-        )
-        # Look for "RMS level dB:" in the final summary
-        m = re.findall(r"RMS level dB:\s*(-?\d+(?:\.\d+)?|-inf)", res.stderr)
-        if m:
-            val = m[-1]
-            rms = float("-inf") if val == "-inf" else float(val)
+    for e in band_energy:
+        rms = (e / max(1, band_count)) ** 0.5
+        if rms <= 0:
+            rms_db.append(float("-inf"))
         else:
-            rms = float("-inf")
-        rms_db.append(rms)
+            rms_db.append(20.0 * math.log10(rms / 32768.0))
 
     return {
         "ok": True,
