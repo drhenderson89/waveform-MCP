@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "preview",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "waveform_mcp.preview.app", "--port", "7878", "--events", "events.log"],
+      "port": 7878
+    }
+  ]
+}

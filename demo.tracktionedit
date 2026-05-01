@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<EDIT appVersion="13.5" projectId="edit_05a57af47d" creator="waveform-mcp" length="64">
+  <TEMPOSEQUENCE>
+    <TEMPO startBeat="0" bpm="124" curve="1" />
+    <TIMESIG startBeat="0" numerator="4" denominator="4" triplets="0" />
+  </TEMPOSEQUENCE>
+  <PITCHSEQUENCE>
+    <PITCH startBeat="0" pitch="0" scale="major" />
+  </PITCHSEQUENCE>
+  <MARKERTRACK name="Markers" />
+  <MASTERTRACK name="Master">
+    <PLUGINS />
+  </MASTERTRACK>
+  <TRACKS>
+    <TRACK id="trk_c1d87a4c0a" name="Drums" kind="midi" volumeDb="0" pan="0" mute="0" solo="0" output="master">
+      <PLUGINS>
+        <PLUGIN id="plg_2c3b08f8ae" type="MicroDrumSampler" name="MicroDrumSampler" enabled="1" />
+      </PLUGINS>
+      <CLIPS>
+        <MIDICLIP id="clip_079dd6f3ba" name="Beat" start="0" length="4">
+          <SEQUENCE ver="1">
+            <NOTE p="36" b="0" l="0.5" v="110" c="1" />
+            <NOTE p="36" b="1" l="0.5" v="110" c="1" />
+          </SEQUENCE>
+        </MIDICLIP>
+      </CLIPS>
+    </TRACK>
+  </TRACKS>
+</EDIT>

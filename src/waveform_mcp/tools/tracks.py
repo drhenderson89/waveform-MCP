@@ -1,0 +1,231 @@
+"""Track-level tools: add, mix, send, marker."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from ..model import Edit, Marker, Send, Track, _id
+from .common import op
+
+TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "track_add",
+        "description": "Add a new track. kind ∈ {audio, midi, folder, submix, automation}.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["audio", "midi", "folder", "submix", "automation"],
+                    "default": "midi",
+                },
+                "volume_db": {"type": "number", "default": 0.0},
+                "pan": {"type": "number", "minimum": -1, "maximum": 1, "default": 0.0},
+            },
+        },
+    },
+    {
+        "name": "track_remove",
+        "description": "Delete a track by id.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["track_id"],
+            "properties": {"track_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "mix_set",
+        "description": "Set track volume (dB), pan (-1..1), mute, solo. Pass only the fields to change.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["track_id"],
+            "properties": {
+                "track_id": {"type": "string"},
+                "volume_db": {"type": "number"},
+                "pan": {"type": "number", "minimum": -1, "maximum": 1},
+                "mute": {"type": "boolean"},
+                "solo": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "send_add",
+        "description": "Add an aux send from one track to another.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["src_track_id", "dest_track_id"],
+            "properties": {
+                "src_track_id": {"type": "string"},
+                "dest_track_id": {"type": "string"},
+                "amount_db": {"type": "number", "default": -6.0},
+                "pre_post": {"type": "string", "enum": ["pre", "post"], "default": "post"},
+            },
+        },
+    },
+    {
+        "name": "marker_add",
+        "description": "Drop a marker (verse, chorus, drop, etc.) at a beat position.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["name", "start_beats"],
+            "properties": {
+                "name": {"type": "string"},
+                "start_beats": {"type": "number"},
+                "length_beats": {"type": "number", "default": 0.0},
+            },
+        },
+    },
+    {
+        "name": "tempo_set",
+        "description": "Set the project tempo in BPM (currently single global tempo; per-bar curves later).",
+        "inputSchema": {
+            "type": "object",
+            "required": ["bpm"],
+            "properties": {"bpm": {"type": "number", "minimum": 20, "maximum": 999}},
+        },
+    },
+    {
+        "name": "key_set",
+        "description": "Set the project key.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["root", "mode"],
+            "properties": {
+                "root": {"type": "integer", "minimum": 0, "maximum": 11},
+                "mode": {"type": "string", "enum": ["major", "minor"]},
+            },
+        },
+    },
+    {
+        "name": "mix_apply_reference",
+        "description": (
+            "Set a track's volume_db (and optional pan) to the genre+role "
+            "reference from the MIX_BALANCE table. Use this once per track "
+            "after creating it instead of hand-tuning levels. Genres: "
+            "synthwave, lofi, edm, pop, hip_hop, cinematic, ambient. Roles: "
+            "drums, kick, snare, hat, bass, sub_bass, lead, pad, keys, arp, "
+            "counter, melody, ambience, fx. Returns the dB value applied."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["track_id", "genre", "role"],
+            "properties": {
+                "track_id": {"type": "string"},
+                "genre":    {"type": "string"},
+                "role":     {"type": "string"},
+                "pan":      {"type": "number", "minimum": -1, "maximum": 1},
+                "offset_db": {"type": "number", "default": 0.0,
+                              "description": "Signed adjustment on top of the reference (e.g. +1 to lift slightly)"},
+            },
+        },
+    },
+]
+
+
+# ---------- impls ----------
+
+
+@op("track_add", intent_template="Add {kind} track '{name}'")
+def track_add(edit: Edit, name: str, kind: str = "midi", volume_db: float = 0.0, pan: float = 0.0) -> dict:
+    t = Track(id=_id("trk"), name=name, kind=kind, volume_db=volume_db, pan=pan)  # type: ignore[arg-type]
+    edit.tracks.append(t)
+    return {"track_id": t.id}
+
+
+@op("track_remove", intent_template="Remove track {track_id}")
+def track_remove(edit: Edit, track_id: str) -> dict:
+    edit.tracks = [t for t in edit.tracks if t.id != track_id]
+    return {"track_id": track_id}
+
+
+@op("mix_set", intent_template="Adjust mix on {track_id}")
+def mix_set(
+    edit: Edit,
+    track_id: str,
+    volume_db: float | None = None,
+    pan: float | None = None,
+    mute: bool | None = None,
+    solo: bool | None = None,
+) -> dict:
+    t = edit.track(track_id)
+    if volume_db is not None:
+        t.volume_db = volume_db
+    if pan is not None:
+        t.pan = pan
+    if mute is not None:
+        t.mute = mute
+    if solo is not None:
+        t.solo = solo
+    return {"track_id": track_id}
+
+
+@op("send_add", intent_template="Send from {src_track_id} to {dest_track_id}")
+def send_add(
+    edit: Edit,
+    src_track_id: str,
+    dest_track_id: str,
+    amount_db: float = -6.0,
+    pre_post: str = "post",
+) -> dict:
+    src = edit.track(src_track_id)
+    edit.track(dest_track_id)  # validate exists
+    src.sends.append(Send(dest_track_id=dest_track_id, amount_db=amount_db, pre_post=pre_post))  # type: ignore[arg-type]
+    return {"track_id": src_track_id}
+
+
+@op("marker_add", intent_template="Marker '{name}' @ beat {start_beats}")
+def marker_add(edit: Edit, name: str, start_beats: float, length_beats: float = 0.0) -> dict:
+    m = Marker(name=name, start_beats=start_beats, length_beats=length_beats)
+    edit.markers.append(m)
+    return {"marker": name}
+
+
+@op("tempo_set", intent_template="Tempo → {bpm} BPM")
+def tempo_set(edit: Edit, bpm: float) -> dict:
+    edit.tempo = bpm
+    return {}
+
+
+@op("key_set", intent_template="Key → {root} {mode}")
+def key_set(edit: Edit, root: int, mode: str) -> dict:
+    edit.key_root = root
+    edit.key_mode = mode  # type: ignore[assignment]
+    return {}
+
+
+@op("mix_apply_reference", intent_template="Apply {genre}/{role} mix to {track_id}")
+def mix_apply_reference(
+    edit: Edit,
+    track_id: str,
+    genre: str,
+    role: str,
+    pan: float | None = None,
+    offset_db: float = 0.0,
+) -> dict:
+    """Look up the (genre, role) reference dB and apply it as the track's
+    static volume_db. Optional pan & offset_db for fine adjustments.
+    """
+    from .. import music_theory_data as data
+    t = edit.track(track_id)
+    ref = data.mix_level_for(genre, role)
+    t.volume_db = ref + float(offset_db)
+    if pan is not None:
+        t.pan = float(pan)
+    return {
+        "track_id": track_id, "genre": genre, "role": role,
+        "reference_db": ref, "applied_db": t.volume_db,
+    }
+
+
+HANDLERS = {
+    "track_add": track_add,
+    "track_remove": track_remove,
+    "mix_set": mix_set,
+    "send_add": send_add,
+    "marker_add": marker_add,
+    "tempo_set": tempo_set,
+    "key_set": key_set,
+    "mix_apply_reference": mix_apply_reference,
+}
