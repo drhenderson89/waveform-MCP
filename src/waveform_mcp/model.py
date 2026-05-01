@@ -62,6 +62,10 @@ class Plugin:
     sounds: list[dict[str, Any]] = field(default_factory=list)
     preset_path: str | None = None
     enabled: bool = True
+    # Track-level Modifier assignments routed to this plugin's parameters.
+    modifier_assignments: list[Any] = field(default_factory=list)   # list[ModifierAssignment]
+    # Macro parameters exposed by this plugin.
+    macros: list[Any] = field(default_factory=list)                 # list[Macro]
 
 
 @dataclass
@@ -76,6 +80,87 @@ class Marker:
     name: str
     start_beats: float
     length_beats: float = 0.0
+
+
+@dataclass
+class Modifier:
+    """A track-level modulation source — LFO, envelope, random, etc.
+    Lives under <TRACK>/<MODIFIERS> in the .tracktionedit XML. Plugin
+    parameters reference these via ModifierAssignment.
+
+    Schema captured from tracktion_engine OldEditConversion.h:
+      <LFO id syncType depth phase rateType rate/>
+    """
+    id: str
+    type: Literal["lfo", "envelope", "random", "step_lfo", "midi_tracker"] = "lfo"
+    depth: float = 0.5            # 0..1
+    rate: float = 1.0             # Hz when rateType=0, beat multiplier when rateType=1
+    rate_type: int = 1            # 0=time-based (Hz), 1=beat-synced
+    sync_type: int = 1            # 1=transport sync
+    phase: float = 0.0            # 0..1 (normalized phase offset)
+    shape: str = "sine"           # for LFO: sine, triangle, square, saw
+
+
+@dataclass
+class ModifierAssignment:
+    """Links a parameter on a plugin to a track-level Modifier.
+    Lives under <PLUGIN>/<MODIFIERASSIGNMENTS> in the XML.
+
+      <LFO source="<modifier-id>" paramID="filterFreq" value="1.0"/>
+    """
+    modifier_id: str       # references Track.modifiers[N].id
+    param_id: str          # the plugin's param name (e.g. "filterFreq")
+    value: float = 1.0     # depth scaling; typically 1.0
+    modifier_type: Literal["lfo", "envelope", "random", "step_lfo", "midi_tracker"] = "lfo"
+
+
+@dataclass
+class Macro:
+    """A macro parameter on a plugin — single-knob control mapped to one
+    or more underlying params. Lives under
+    <PLUGIN>/<MACROPARAMETERS>/<MACROPARAMETER>.
+    """
+    id: str
+    name: str = "Macro"
+    value: float = 0.0           # current 0..1 value
+    default_value: float = 0.0
+
+
+@dataclass
+class StepClipChannel:
+    """One drum row in a StepClip. (channel, note) define what plays."""
+    channel: int = 1
+    note: int = 60               # MIDI pitch this row triggers
+    velocity: int = 127          # default velocity for this row
+    name: str = "C4"             # display name
+
+
+@dataclass
+class StepClipPattern:
+    """One programmed pattern. Each row in `rows` is for the corresponding
+    StepClipChannel — a string of '0'/'1' per step + a list of velocities
+    per step. numNotes = total step count across all rows; noteLength is
+    the duration of each step in beats.
+    """
+    note_length: float = 1.0    # beats per step (0.25 = 16ths)
+    rows: list[dict] = field(default_factory=list)
+    # Each row dict: {pattern: "10101010...", velocities: [127, 127, ...]}
+
+
+@dataclass
+class StepClip:
+    """A drum-machine step clip — alternative to MidiClip for grid-based
+    drum programming. Schema captured from a real Waveform fixture.
+    """
+    id: str
+    name: str
+    start_beats: float
+    length_beats: float
+    channels: list[StepClipChannel] = field(default_factory=list)
+    patterns: list[StepClipPattern] = field(default_factory=list)
+    repeat_sequence: bool = True
+    sequence_index: int = 0
+    kind: Literal["step"] = "step"
 
 
 @dataclass
@@ -153,7 +238,7 @@ class AudioClip:
     offset_in_source_beats: float = 0.0 # skip this many beats into the source file
 
 
-Clip = MidiClip | AudioClip
+Clip = MidiClip | AudioClip | StepClip
 
 
 # ---------- tracks ----------
@@ -173,6 +258,7 @@ class Track:
     sends: list[Send] = field(default_factory=list)
     output: str = "master"      # track id or "master"
     automation: list[AutomationLane] = field(default_factory=list)
+    modifiers: list[Modifier] = field(default_factory=list)
 
 
 # ---------- root ----------

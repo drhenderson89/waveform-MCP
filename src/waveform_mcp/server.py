@@ -42,6 +42,7 @@ from .tools import (
     preset_library,
     reference_songs,
     render,
+    step_clips,
     tracks,
     waveform_app,
     workflow,
@@ -55,7 +56,7 @@ def _collect_tools() -> tuple[list[Tool], dict[str, Any]]:
     modules: list[Any] = [
         edit_tools, tracks, midi, audio, clips, automation, plugins, render,
         waveform_app, desktop, preset_library, composer, music_theory, loops,
-        melody, drum_patterns, composition,
+        melody, drum_patterns, composition, step_clips,
         audio_analysis, audio_detect, midi_export, reference_songs, workflow,
     ]
     if sys.platform == "win32":

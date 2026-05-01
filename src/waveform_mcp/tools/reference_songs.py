@@ -11,6 +11,28 @@ from __future__ import annotations
 from typing import Any
 
 
+# Reference spectral profiles — RMS dB per band at the listed center
+# frequencies. Values are TYPICAL targets for each genre, drawn from
+# mastering-engineer cheat sheets and analyzed reference tracks.
+# Use audio_compare to delta against these targets.
+#
+# Bands: 60 / 133 / 296 / 657 / 1460 / 3243 / 7204 / 16000 Hz
+# (the default 8-band log-spaced layout audio_spectrum returns)
+REFERENCE_SPECTRA: dict[str, list[float]] = {
+    "synthwave":    [-23, -28, -26, -28, -34, -38, -42, -68],   # tight low end, controlled mids, sparkly top
+    "pop":          [-24, -27, -25, -26, -29, -33, -38, -55],   # vocal mid forward
+    "lofi":         [-22, -26, -27, -29, -34, -42, -50, -75],   # rolled-off top, full low
+    "edm":          [-18, -22, -24, -27, -30, -34, -38, -55],   # everything loud, especially low end
+    "house":        [-20, -23, -25, -27, -30, -34, -39, -58],
+    "hip_hop":      [-19, -21, -25, -28, -31, -36, -42, -65],   # huge sub, rolled top
+    "rock":         [-25, -27, -23, -22, -26, -30, -34, -50],   # mid-forward (guitars)
+    "ambient":      [-30, -34, -34, -34, -38, -42, -46, -55],   # flat-ish, no emphasis
+    "cinematic":    [-25, -28, -28, -28, -32, -36, -40, -55],   # broad, dynamic
+    "jazz":         [-28, -30, -27, -25, -28, -32, -36, -50],   # mid-forward (horns / piano)
+    "classical":    [-32, -34, -32, -30, -32, -34, -36, -42],   # bright top preserved
+}
+
+
 REFERENCE_SONGS: dict[str, dict[str, Any]] = {
     "drive_kavinsky": {
         "title": "Nightcall (Kavinsky)",
@@ -125,6 +147,37 @@ REFERENCE_SONGS: dict[str, dict[str, Any]] = {
 
 TOOLS: list[dict[str, Any]] = [
     {
+        "name": "reference_spectrum_lookup",
+        "description": (
+            "Get the target spectral profile (RMS dB per log-spaced band) "
+            "for a genre — a mastering-engineer-cheat-sheet target for what "
+            "a well-mixed track in this genre should look like spectrally. "
+            "Bands: 60 / 133 / 296 / 657 / 1460 / 3243 / 7204 / 16000 Hz."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["genre"],
+            "properties": {"genre": {"type": "string"}},
+        },
+    },
+    {
+        "name": "mix_match_reference",
+        "description": (
+            "Compare a rendered file against a genre's reference spectrum "
+            "and return a per-band diff in dB plus a plain-English diagnosis "
+            "('low end is +4 dB hot vs synthwave reference; consider HP "
+            "filter on bass'). Use after render to inform mix adjustments."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["file_path", "genre"],
+            "properties": {
+                "file_path": {"type": "string"},
+                "genre":     {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "reference_song_lookup",
         "description": (
             "Look up musical hints for a song. Pass `name` (one of the keys "
@@ -163,6 +216,79 @@ def reference_song_lookup(args: dict) -> dict:
     return {"ok": False, "error": "pass `name` or `genre`"}
 
 
+def reference_spectrum_lookup(args: dict) -> dict:
+    genre = args["genre"].lower()
+    spec = REFERENCE_SPECTRA.get(genre)
+    if spec is None:
+        return {"ok": False, "error": f"unknown genre: {genre}",
+                "available": sorted(REFERENCE_SPECTRA.keys())}
+    bands = [60, 133, 296, 657, 1460, 3243, 7204, 16000]
+    return {"ok": True, "genre": genre,
+            "centers_hz": bands, "rms_db_target": spec}
+
+
+_BAND_NAMES = ["sub", "low", "low-mid", "mid", "high-mid", "presence", "brilliance", "air"]
+
+
+def mix_match_reference(args: dict) -> dict:
+    """Compare a rendered file's spectrum to a genre reference spectrum
+    and return a per-band diff with a diagnostic narrative.
+    """
+    from . import audio_analysis
+    file_path = args["file_path"]
+    genre = args["genre"].lower()
+    target = REFERENCE_SPECTRA.get(genre)
+    if target is None:
+        return {"ok": False, "error": f"unknown genre: {genre}"}
+
+    measured_res = audio_analysis.audio_spectrum({"file_path": file_path,
+                                                    "bands": len(target)})
+    if not measured_res.get("ok"):
+        return {"ok": False, "error": "spectrum measurement failed",
+                "detail": measured_res.get("error")}
+    measured = measured_res["rms_db"]
+
+    # We compare SPECTRAL SHAPE not absolute level — different masters and
+    # different LUFS targets mean raw dB diffs are dominated by overall
+    # loudness offset. So we subtract the average offset between measured
+    # and target, then compare RELATIVE differences per band.
+    valid_pairs = [(m, t) for m, t in zip(measured, target) if m != float("-inf")]
+    if not valid_pairs:
+        return {"ok": False, "error": "no valid spectral data"}
+    offset = sum(m - t for m, t in valid_pairs) / len(valid_pairs)
+
+    diffs: list[dict] = []
+    for m, t, name, hz in zip(measured, target, _BAND_NAMES, measured_res["centers_hz"]):
+        if m == float("-inf"):
+            diffs.append({"band": name, "hz": hz, "measured_db": m,
+                          "target_db": t, "shape_diff_db": None})
+            continue
+        # SHAPE diff = how this band deviates AFTER removing the global level offset
+        shape_d = (m - t) - offset
+        diffs.append({"band": name, "hz": hz, "measured_db": m,
+                      "target_db": t, "shape_diff_db": shape_d})
+
+    notes: list[str] = []
+    notes.append(f"Overall level offset vs {genre} reference: {offset:+.1f} dB "
+                  f"({'louder' if offset > 0 else 'quieter'})")
+    for entry in diffs:
+        d = entry["shape_diff_db"]
+        if d is None:
+            continue
+        if d > 4:
+            notes.append(f"{entry['band']} band ({int(entry['hz'])} Hz) "
+                          f"is +{d:.1f} dB HOT vs {genre} spectral shape")
+        elif d < -4:
+            notes.append(f"{entry['band']} band ({int(entry['hz'])} Hz) "
+                          f"is {d:.1f} dB DARK vs {genre} spectral shape")
+    if len(notes) == 1:
+        notes.append(f"spectral shape matches {genre} reference within ±4 dB across all bands")
+
+    return {"ok": True, "file": file_path, "genre": genre,
+            "level_offset_db": offset,
+            "diffs": diffs, "diagnosis": notes}
+
+
 def reference_song_list(args: dict) -> dict:
     return {"ok": True,
             "names": sorted(REFERENCE_SONGS.keys()),
@@ -171,6 +297,8 @@ def reference_song_list(args: dict) -> dict:
 
 
 HANDLERS = {
-    "reference_song_lookup": reference_song_lookup,
-    "reference_song_list":   reference_song_list,
+    "reference_song_lookup":     reference_song_lookup,
+    "reference_song_list":       reference_song_list,
+    "reference_spectrum_lookup": reference_spectrum_lookup,
+    "mix_match_reference":       mix_match_reference,
 }

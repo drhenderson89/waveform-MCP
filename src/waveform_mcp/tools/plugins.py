@@ -165,21 +165,50 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "plugin_add_modifier",
         "description": (
-            "Attach a modifier (LFO, envelope, sidechain) to a plugin "
-            "parameter. modifier_type ∈ {'lfo','envelope','sidechain'}. "
-            "depth, rate are 0..1; shape ∈ {'sine','triangle','square','saw'}."
+            "Add a TRACK-LEVEL modifier (LFO/envelope/random/step_lfo) and "
+            "assign it to a plugin parameter. Real Tracktion schema — wires "
+            "both <MODIFIERS> on the track AND <MODIFIERASSIGNMENTS> on the "
+            "plugin. depth: 0..1 (modulation amount). rate: Hz when "
+            "rate_type=0, beat multiplier when rate_type=1 (default = beat-"
+            "synced). shape ∈ {sine, triangle, square, saw}."
         ),
         "inputSchema": {
             "type": "object",
             "required": ["track_id", "target_plugin_id", "target_param"],
             "properties": {
-                "track_id": {"type": "string"},
+                "track_id":         {"type": "string"},
                 "target_plugin_id": {"type": "string"},
-                "target_param": {"type": "string"},
-                "modifier_type": {"type": "string", "enum": ["lfo", "envelope", "sidechain"], "default": "lfo"},
-                "depth": {"type": "number", "default": 0.5},
-                "rate": {"type": "number", "default": 1.0},
-                "shape": {"type": "string", "enum": ["sine", "triangle", "square", "saw"], "default": "sine"},
+                "target_param":     {"type": "string"},
+                "modifier_type":    {"type": "string",
+                                      "enum": ["lfo", "envelope", "random", "step_lfo"],
+                                      "default": "lfo"},
+                "depth":     {"type": "number", "default": 0.5},
+                "rate":      {"type": "number", "default": 1.0},
+                "rate_type": {"type": "integer", "default": 1,
+                              "description": "0 = Hz, 1 = beat-synced"},
+                "shape":     {"type": "string",
+                              "enum": ["sine", "triangle", "square", "saw"],
+                              "default": "sine"},
+                "phase":     {"type": "number", "default": 0.0},
+            },
+        },
+    },
+    {
+        "name": "plugin_add_macro",
+        "description": (
+            "Add a MacroParameter (single 0..1 knob) to a plugin. Macros are "
+            "the canonical Tracktion way to expose a single control that "
+            "drives multiple underlying params via assignments."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["track_id", "plugin_id", "name"],
+            "properties": {
+                "track_id":      {"type": "string"},
+                "plugin_id":     {"type": "string"},
+                "name":          {"type": "string"},
+                "value":         {"type": "number", "default": 0.0},
+                "default_value": {"type": "number", "default": 0.0},
             },
         },
     },
@@ -419,38 +448,79 @@ def compress_smash(edit: Edit, track_id: str) -> dict:
     return {"track_id": track_id, "plugin_id": p.id}
 
 
-@op("plugin_add_modifier", intent_template="Add {modifier_type} modifier to {target_plugin_id}/{target_param}")
+@op("plugin_add_modifier", intent_template="Add {modifier_type} on {track_id} → {target_plugin_id}/{target_param}")
 def plugin_add_modifier(
     edit: Edit,
     track_id: str,
     target_plugin_id: str,
     target_param: str,
-    modifier_type: str = "lfo",      # "lfo" | "envelope" | "sidechain"
+    modifier_type: str = "lfo",        # "lfo" | "envelope" | "random" | "step_lfo"
     depth: float = 0.5,
     rate: float = 1.0,
-    shape: str = "sine",             # for LFO: sine, triangle, square, saw
+    rate_type: int = 1,                # 0=Hz, 1=beat-synced
+    shape: str = "sine",
+    phase: float = 0.0,
 ) -> dict:
-    """Attach a modifier assignment to a plugin parameter. Stored on the
-    plugin's `modmatrix` list (we reuse that list for both 4OSC mod-matrix
-    and generic modifier assignments — the writer routes them appropriately).
+    """Add a TRACK-LEVEL modifier and assign it to a plugin parameter.
+
+    Real schema (captured from tracktion_engine source):
+      Track has <MODIFIERS><LFO id depth rate ...></MODIFIERS>
+      Plugin has <MODIFIERASSIGNMENTS><LFO source="<id>" paramID="..." value="1.0"/></MODIFIERASSIGNMENTS>
+
+    This wires both ends. depth/rate/shape/phase configure the modulation
+    source; the assignment scales it by `value`=1.0 onto the target param.
     """
+    from ..model import Modifier, ModifierAssignment
     t = edit.track(track_id)
     target = next((p for p in t.plugins if p.id == target_plugin_id), None)
     if target is None:
         raise KeyError(f"plugin {target_plugin_id} not found on track {track_id}")
-    target.modmatrix.append({
-        "modParam": target_param,
-        "modItem": modifier_type,
-        "modDepth": float(depth),
-        "modRate": float(rate),
-        "modShape": shape,
-    })
+    mod = Modifier(
+        id=_id("mod"),
+        type=modifier_type,  # type: ignore[arg-type]
+        depth=float(depth),
+        rate=float(rate),
+        rate_type=int(rate_type),
+        shape=shape,
+        phase=float(phase),
+    )
+    t.modifiers.append(mod)
+    target.modifier_assignments.append(ModifierAssignment(
+        modifier_id=mod.id,
+        param_id=target_param,
+        modifier_type=modifier_type,  # type: ignore[arg-type]
+        value=1.0,
+    ))
     return {
         "track_id": track_id,
+        "modifier_id": mod.id,
         "target_plugin_id": target_plugin_id,
         "target_param": target_param,
         "modifier_type": modifier_type,
     }
+
+
+@op("plugin_add_macro", intent_template="Add macro '{name}' on {plugin_id}")
+def plugin_add_macro(
+    edit: Edit,
+    track_id: str,
+    plugin_id: str,
+    name: str,
+    value: float = 0.0,
+    default_value: float = 0.0,
+) -> dict:
+    """Add a MacroParameter to a plugin. Macros expose a single 0..1 knob
+    that other automation/modifiers can target as a single control point.
+    """
+    from ..model import Macro
+    t = edit.track(track_id)
+    plug = next((p for p in t.plugins if p.id == plugin_id), None)
+    if plug is None:
+        raise KeyError(f"plugin {plugin_id} not found")
+    macro = Macro(id=_id("macro"), name=name, value=float(value),
+                  default_value=float(default_value))
+    plug.macros.append(macro)
+    return {"plugin_id": plugin_id, "macro_id": macro.id, "name": name}
 
 
 def plugin_list(args: dict) -> dict:
@@ -538,6 +608,7 @@ HANDLERS = {
     "plugin_add_reverb": plugin_add_reverb,
     "plugin_add_drum_kit": plugin_add_drum_kit,
     "plugin_add_modifier": plugin_add_modifier,
+    "plugin_add_macro": plugin_add_macro,
     "plugin_discover": plugin_discover,
     "eq_high_pass": eq_high_pass,
     "eq_low_pass": eq_low_pass,

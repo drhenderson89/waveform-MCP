@@ -35,6 +35,7 @@ from .model import (
     Note,
     Plugin,
     Send,
+    StepClip,
     Track,
 )
 
@@ -172,7 +173,22 @@ def _build_track(parent: ET.Element, t: Track, index: int, ids: _IdAllocator) ->
     _attr(el, id=track_id, name=t.name, colour=_track_colour(index),
           mute=t.mute if t.mute else None,
           solo=t.solo if t.solo else None)
-    ET.SubElement(el, "MODIFIERS")
+    # Track-level modifiers (LFO / envelope / random / step_lfo / midi_tracker).
+    # Schema from tracktion_engine: <LFO id syncType depth phase rateType rate/>
+    # The element TAG matches the modifier type (uppercase in real Waveform).
+    modifiers_el = ET.SubElement(el, "MODIFIERS")
+    for mod in (t.modifiers or []):
+        mod_tag = {"lfo":"LFO", "envelope":"ENVELOPEFOLLOWER",
+                   "random":"RANDOM", "step_lfo":"STEPLFO",
+                   "midi_tracker":"MIDITRACKER"}.get(mod.type, "LFO")
+        _attr(ET.SubElement(modifiers_el, mod_tag),
+              id=mod.id,
+              syncType=mod.sync_type,
+              depth=float(mod.depth),
+              phase=float(mod.phase),
+              rateType=mod.rate_type,
+              rate=float(mod.rate),
+              shape=mod.shape if mod.type == "lfo" else None)
 
     # CLIPSLOTS holds the user-assigned clip slots (for the v13 Clip Launcher).
     # Empty for now; extend when we model clip slots.
@@ -185,6 +201,8 @@ def _build_track(parent: ET.Element, t: Track, index: int, ids: _IdAllocator) ->
             _build_midi_clip(el, c, index, ids)
         elif isinstance(c, AudioClip):
             _build_audio_clip(el, c, ids)
+        elif isinstance(c, StepClip):
+            _build_step_clip(el, c, index, ids)
 
     # User-added plugins (instruments, FX) before the implicit volume/level
     # We track the rendered plugin element by source id so automation lanes
@@ -327,6 +345,32 @@ def _build_audio_clip(parent: ET.Element, c: AudioClip, ids: _IdAllocator) -> No
     )
 
 
+def _build_step_clip(parent: ET.Element, c: StepClip, track_index: int, ids: _IdAllocator) -> None:
+    """Schema captured from a real Waveform fixture (Convert to Step clip)."""
+    el = ET.SubElement(parent, "STEPCLIP")
+    _attr(el,
+          name=c.name, start=c.start_beats, length=c.length_beats, offset=0.0,
+          id=ids.next(), sequence=c.sequence_index,
+          colour=_track_colour(track_index),
+          repeatSequence=c.repeat_sequence)
+    ET.SubElement(el, "AUTOMATIONCURVES")
+    channels_el = ET.SubElement(el, "CHANNELS")
+    for ch in c.channels:
+        _attr(ET.SubElement(channels_el, "CHANNEL"),
+              channel=ch.channel, note=ch.note,
+              velocity=ch.velocity, name=ch.name)
+    patterns_el = ET.SubElement(el, "PATTERNS")
+    for pat in c.patterns:
+        # numNotes = sum of '1's across all rows; noteLength in beats per step
+        total_ones = sum(row.get("pattern", "").count("1") for row in pat.rows)
+        pat_el = ET.SubElement(patterns_el, "PATTERN")
+        _attr(pat_el, numNotes=total_ones, noteLength=pat.note_length)
+        for row in pat.rows:
+            ch_el = ET.SubElement(pat_el, "CHANNEL")
+            vels = " ".join(str(int(v)) for v in row.get("velocities", []))
+            _attr(ch_el, pattern=row.get("pattern", ""), velocities=vels)
+
+
 def _build_plugin(parent: ET.Element, p: Plugin, ids: _IdAllocator) -> ET.Element:
     """Plugin schema captured from .trkpreset factory presets.
 
@@ -356,9 +400,24 @@ def _build_plugin(parent: ET.Element, p: Plugin, ids: _IdAllocator) -> ET.Elemen
     if p.preset_path:
         _attr(el, presetPath=p.preset_path)
 
-    # Standard children expected by Waveform on every plugin
-    _attr(ET.SubElement(el, "MACROPARAMETERS"), id=plugin_id)
-    ET.SubElement(el, "MODIFIERASSIGNMENTS")
+    # MACROPARAMETERS — emit children if any macros are defined.
+    macros_el = ET.SubElement(el, "MACROPARAMETERS")
+    _attr(macros_el, id=plugin_id)
+    for m in p.macros:
+        _attr(ET.SubElement(macros_el, "MACROPARAMETER"),
+              id=m.id, name=m.name,
+              value=float(m.value), defaultValue=float(m.default_value))
+    # MODIFIERASSIGNMENTS — links to track-level Modifiers per parameter.
+    # Schema: <LFO source="<modifier-id>" paramID="<param>" value="1.0"/>
+    mod_assign_el = ET.SubElement(el, "MODIFIERASSIGNMENTS")
+    for ma in p.modifier_assignments:
+        ma_tag = {"lfo":"LFO", "envelope":"ENVELOPEFOLLOWER",
+                  "random":"RANDOM", "step_lfo":"STEPLFO",
+                  "midi_tracker":"MIDITRACKER"}.get(ma.modifier_type, "LFO")
+        _attr(ET.SubElement(mod_assign_el, ma_tag),
+              source=ma.modifier_id,
+              paramID=ma.param_id,
+              value=float(ma.value))
     # Instruments also need FACEPLATE + MODMATRIX.
     if type_code in ("4osc", "wavetable", "microDrumSampler", "multiSampler"):
         _attr(ET.SubElement(el, "FACEPLATE"), width=8, height=4, autoSize=True)

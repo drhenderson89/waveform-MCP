@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..model import Edit, Marker, Send, Track, _id
+from ..model import Edit, Marker, Plugin, Send, Track, _id
 from .common import op
 
 TOOLS: list[dict[str, Any]] = [
@@ -52,15 +52,22 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "send_add",
-        "description": "Add an aux send from one track to another.",
+        "description": (
+            "Add an aux send (parallel routing) on a track. Tracktion routes "
+            "via numbered buses 0..15 — pass bus_num explicitly, or pass "
+            "dest_track_id to auto-pick a bus. Pair with aux_return_add on "
+            "the receiving track. Emits a real <PLUGIN type='auxsend'/> "
+            "element with proper slider position from amount_db."
+        ),
         "inputSchema": {
             "type": "object",
-            "required": ["src_track_id", "dest_track_id"],
+            "required": ["src_track_id"],
             "properties": {
-                "src_track_id": {"type": "string"},
-                "dest_track_id": {"type": "string"},
-                "amount_db": {"type": "number", "default": -6.0},
-                "pre_post": {"type": "string", "enum": ["pre", "post"], "default": "post"},
+                "src_track_id":  {"type": "string"},
+                "dest_track_id": {"type": "string", "description": "Optional convenience: auto-pick bus from track index"},
+                "bus_num":       {"type": "integer", "minimum": 0, "maximum": 15},
+                "amount_db":     {"type": "number", "default": -6.0},
+                "pre_post":      {"type": "string", "enum": ["pre", "post"], "default": "post"},
             },
         },
     },
@@ -104,6 +111,23 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "required": ["name"],
                         "properties": {"name": {"type": "string"},
                                        "kind": {"type": "string", "enum": ["submix", "folder"], "default": "submix"}}},
+    },
+    {
+        "name": "aux_return_add",
+        "description": (
+            "Add an auxreturn plugin to a track so it receives audio from "
+            "the given bus number (0..15). Pair with send_add(bus_num=N) on "
+            "source tracks for parallel routing — e.g. drum tracks all "
+            "send to bus 0, aux-return track applies a single reverb."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["track_id"],
+            "properties": {
+                "track_id": {"type": "string"},
+                "bus_num":  {"type": "integer", "default": 0, "minimum": 0, "maximum": 15},
+            },
+        },
     },
     {
         "name": "bus_route",
@@ -175,18 +199,71 @@ def mix_set(
     return {"track_id": track_id}
 
 
-@op("send_add", intent_template="Send from {src_track_id} to {dest_track_id}")
+@op("send_add", intent_template="Aux send from {src_track_id} bus {bus_num}")
 def send_add(
     edit: Edit,
     src_track_id: str,
-    dest_track_id: str,
+    dest_track_id: str | None = None,
     amount_db: float = -6.0,
     pre_post: str = "post",
+    bus_num: int | None = None,
 ) -> dict:
+    """Add an aux send on the source track.
+
+    Tracktion routes sends via numbered aux buses (0..15). The send is
+    realized as an `auxsend` plugin on the source track that writes to
+    `bus_num`. The destination track is conventional only — it's a track
+    with an `auxreturn` plugin reading `bus_num`.
+
+    For convenience, if you pass `dest_track_id` instead of `bus_num`, we
+    use the destination's index in `edit.tracks` modulo 16 as the bus
+    number — sufficient for simple "send Drums to Reverb track" cases.
+
+    Schema (captured from tracktion_engine internal/AuxSend):
+      <PLUGIN type="auxsend" busNum="0" auxSendSliderPos="0.5" phase="0"/>
+    """
     src = edit.track(src_track_id)
-    edit.track(dest_track_id)  # validate exists
-    src.sends.append(Send(dest_track_id=dest_track_id, amount_db=amount_db, pre_post=pre_post))  # type: ignore[arg-type]
-    return {"track_id": src_track_id}
+    if bus_num is None:
+        if dest_track_id is None:
+            raise ValueError("pass bus_num or dest_track_id")
+        dest = edit.track(dest_track_id)
+        bus_num = edit.tracks.index(dest) % 16
+
+    # Convert dB to slider position (Tracktion uses
+    # decibelsToVolumeFaderPosition: roughly 0..1 with 0.638 = unity).
+    slider = 0.6376281380653381
+    if amount_db != 0.0:
+        slider = 0.6376281380653381 * (10.0 ** (amount_db / 40.0))
+
+    src.plugins.append(Plugin(
+        id=_id("plg"),
+        type="auxsend",
+        name=f"Send #{bus_num + 1}",
+        params={
+            "busNum": int(bus_num),
+            "auxSendSliderPos": float(slider),
+            "phase": 0,
+        },
+    ))
+    src.sends.append(Send(dest_track_id=dest_track_id or "", amount_db=amount_db, pre_post=pre_post))  # type: ignore[arg-type]
+    return {"track_id": src_track_id, "bus_num": bus_num, "amount_db": amount_db}
+
+
+@op("aux_return_add", intent_template="Add aux return bus {bus_num} on {track_id}")
+def aux_return_add(edit: Edit, track_id: str, bus_num: int = 0) -> dict:
+    """Add an auxreturn plugin to a track so it receives audio from
+    `bus_num`. Pair with send_add(bus_num=N) on source tracks.
+
+    Schema: <PLUGIN type="auxreturn" busNum="0"/>
+    """
+    t = edit.track(track_id)
+    t.plugins.append(Plugin(
+        id=_id("plg"),
+        type="auxreturn",
+        name=f"Return #{int(bus_num) + 1}",
+        params={"busNum": int(bus_num)},
+    ))
+    return {"track_id": track_id, "bus_num": int(bus_num)}
 
 
 @op("marker_add", intent_template="Marker '{name}' @ beat {start_beats}")
@@ -271,4 +348,5 @@ HANDLERS = {
     "mix_apply_reference": mix_apply_reference,
     "bus_create": bus_create,
     "bus_route": bus_route,
+    "aux_return_add": aux_return_add,
 }
