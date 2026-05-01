@@ -222,16 +222,18 @@ def bus_create(edit: Edit, name: str, kind: str = "submix") -> dict:
 def bus_route(edit: Edit, src_track_id: str, dest_bus_id: str) -> dict:
     """Set src_track's output to flow into dest_bus instead of master.
 
-    NOTE: This sets `Track.output` in the model, but the XML writer does not
-    yet emit a routing element Tracktion reads. Awaits a hand-edited fixture
-    of a real Waveform project with bus routing — the schema is unknown.
-    Until then, calling this is a no-op at render time.
+    Tracktion implements bus routing by NESTING tracks inside a FOLDERTRACK
+    rather than a logical "output to bus" reference. We set `Track.output`
+    in the model for now; the XML writer doesn't yet emit nested children
+    (needs another fixture: capture a project where a track has been
+    physically dragged into a submix folder). The bus FOLDERTRACK itself
+    IS emitted correctly — it just doesn't have routed children yet.
     """
     src = edit.track(src_track_id)
     edit.track(dest_bus_id)  # validate exists
     src.output = dest_bus_id
     return {"track_id": src_track_id, "output": dest_bus_id,
-            "warning": "model-only routing; XML emission needs a Waveform fixture to capture the schema"}
+            "note": "FOLDERTRACK emitted; child-track nesting awaits next fixture pass"}
 
 
 @op("mix_apply_reference", intent_template="Apply {genre}/{role} mix to {track_id}")

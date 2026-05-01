@@ -164,7 +164,10 @@ def _build_master_track(parent: ET.Element, edit: Edit, ids: _IdAllocator) -> No
 
 
 def _build_track(parent: ET.Element, t: Track, index: int, ids: _IdAllocator) -> None:
-    el = ET.SubElement(parent, "TRACK")
+    # Submix / folder tracks emit a FOLDERTRACK element (captured fixture:
+    # tests/fixtures/BEFORE_baseline → after Track → Add submix track).
+    tag = "FOLDERTRACK" if t.kind in ("submix", "folder") else "TRACK"
+    el = ET.SubElement(parent, tag)
     track_id = ids.next()
     _attr(el, id=track_id, name=t.name, colour=_track_colour(index),
           mute=t.mute if t.mute else None,
