@@ -39,6 +39,7 @@ from typing import Any
 from . import composition as comp_tools
 from . import drum_patterns as drum_tools
 from . import edit as edit_tools
+from . import instruments as instr_tools
 from . import melody as mel_tools
 from . import midi as midi_tools
 from . import plugins as plugin_tools
@@ -212,11 +213,10 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     if fill_notes:
         midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": fill_notes})
 
-    # --- 6. Bass — 4OSC + clean-gain comp; locked to kick ---
+    # --- 6. Bass — pick a real bass preset (Smack/Diode/Dub/Pick/...) ---
     bass_id = track_tools.track_add({"name": "Bass", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": bass_id, "type": "4OSC"})
-    # Synthwave bass is supposed to be a synth — bump output gain so
-    # 4OSC default doesn't sit too low under the drums.
+    chosen_bass = instr_tools.equip(bass_id, "bass", rng)
+    # Bump output gain so factory bass presets sit forward under drums.
     from ..model import Plugin as _Plugin
     from ..model import _id as _gen_id
     STORE.edit.track(bass_id).plugins.append(_Plugin(
@@ -267,9 +267,9 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
             enriched.append(n)
         midi_tools.midi_notes_add({"clip_id": bass_clip, "notes": enriched})
 
-    # --- 7. Pad — sustained chord tones, soft attack ---
+    # --- 7. Pad — pick a real pad preset (Bell/Bright/Dark/Hollow/...) ---
     pad_id = track_tools.track_add({"name": "Pad", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": pad_id, "type": "4OSC"})
+    chosen_pad = instr_tools.equip(pad_id, "pad", rng, fallback="strings")
     pad_clip = midi_tools.midi_clip_add({
         "track_id": pad_id, "name": "Pad",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -290,9 +290,9 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
             })
     midi_tools.midi_notes_add({"clip_id": pad_clip, "notes": pad_notes})
 
-    # --- 8. Arp — eighth-note arpeggio of chord tones ---
+    # --- 8. Arp — pick a pluck-friendly preset (Pulse/Triangle/Poly/...) ---
     arp_id = track_tools.track_add({"name": "Arp", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": arp_id, "type": "4OSC"})
+    chosen_arp = instr_tools.equip(arp_id, "pluck", rng, fallback="lead")
     arp_clip = midi_tools.midi_clip_add({
         "track_id": arp_id, "name": "Arp",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -364,9 +364,12 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
                 "arp_pattern failed at bar %d: %s", bar, e)
     midi_tools.midi_notes_add({"clip_id": arp_clip, "notes": arp_notes})
 
-    # --- 9. Lead — per-section melody with quantization ---
+    # --- 9. Lead — pick a real lead patch (Stab/V-ger/Tech 5th/...) ---
     lead_id = track_tools.track_add({"name": "Lead", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": lead_id, "type": "4OSC"})
+    # 25% of the time roll a real electric guitar instead of a synth lead
+    lead_category = "guitar" if rng.random() < 0.25 else "lead"
+    chosen_lead = instr_tools.equip(lead_id, lead_category, rng,
+                                     fallback="lead")
     lead_clip = midi_tools.midi_clip_add({
         "track_id": lead_id, "name": "Lead",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -415,7 +418,7 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     sub_id = None
     if rng.random() < 0.6:
         sub_id = track_tools.track_add({"name": "Sub Bass", "kind": "midi"})["track_id"]
-        plugin_tools.plugin_add({"track_id": sub_id, "type": "4OSC"})
+        instr_tools.equip(sub_id, "bass", rng)
         sub_clip = midi_tools.midi_clip_add({
             "track_id": sub_id, "name": "Sub",
             "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -441,7 +444,7 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     pluck_id = None
     if rng.random() < 0.5:
         pluck_id = track_tools.track_add({"name": "Pluck", "kind": "midi"})["track_id"]
-        plugin_tools.plugin_add({"track_id": pluck_id, "type": "4OSC"})
+        instr_tools.equip(pluck_id, "pluck", rng, fallback="lead")
         pluck_clip = midi_tools.midi_clip_add({
             "track_id": pluck_id, "name": "Pluck",
             "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -470,7 +473,9 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     counter_id = None
     if rng.random() < 0.5:
         counter_id = track_tools.track_add({"name": "Counter", "kind": "midi"})["track_id"]
-        plugin_tools.plugin_add({"track_id": counter_id, "type": "4OSC"})
+        # Counter often plays a contrasting timbre — strings or vibes
+        instr_tools.equip(counter_id, rng.choice(["strings", "vibes", "lead"]),
+                          rng, fallback="lead")
         counter_clip = midi_tools.midi_clip_add({
             "track_id": counter_id, "name": "Counter",
             "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -506,7 +511,7 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     pad_b_id = None
     if rng.random() < 0.4:
         pad_b_id = track_tools.track_add({"name": "Pad B", "kind": "midi"})["track_id"]
-        plugin_tools.plugin_add({"track_id": pad_b_id, "type": "4OSC"})
+        instr_tools.equip(pad_b_id, "pad", rng, fallback="strings")
         pad_b_clip = midi_tools.midi_clip_add({
             "track_id": pad_b_id, "name": "Pad B",
             "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -540,7 +545,11 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     harmony_id = None
     if rng.random() < 0.35 and lead_notes_filtered:
         harmony_id = track_tools.track_add({"name": "Harmony", "kind": "midi"})["track_id"]
-        plugin_tools.plugin_add({"track_id": harmony_id, "type": "4OSC"})
+        # Harmony usually gets a contrasting voice from the lead — brass
+        # or strings or a softer lead. Distinct timbre from main lead.
+        instr_tools.equip(harmony_id,
+                          rng.choice(["brass", "strings", "lead", "violin"]),
+                          rng, fallback="lead")
         harmony_clip = midi_tools.midi_clip_add({
             "track_id": harmony_id, "name": "Harmony",
             "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -577,7 +586,9 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     chimes_id = None
     if rng.random() < 0.5:
         chimes_id = track_tools.track_add({"name": "Chimes", "kind": "midi"})["track_id"]
-        plugin_tools.plugin_add({"track_id": chimes_id, "type": "4OSC"})
+        instr_tools.equip(chimes_id,
+                          rng.choice(["bells", "vibes", "pluck"]),
+                          rng, fallback="pluck")
         chimes_clip = midi_tools.midi_clip_add({
             "track_id": chimes_id, "name": "Chimes",
             "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -626,7 +637,7 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     riser_id = None
     if rng.random() < 0.4:
         riser_id = track_tools.track_add({"name": "Riser", "kind": "midi"})["track_id"]
-        plugin_tools.plugin_add({"track_id": riser_id, "type": "4OSC"})
+        instr_tools.equip(riser_id, "lead", rng)
         riser_clip = midi_tools.midi_clip_add({
             "track_id": riser_id, "name": "Riser",
             "start_beats": 0.0, "length_beats": total_bars * 4,
