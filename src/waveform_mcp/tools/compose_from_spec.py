@@ -205,6 +205,66 @@ def _build_track(tspec: TrackSpec, spec: CompositionSpec, total_beats: float,
         except Exception as e:
             warnings.append(f"plugin_add({plug_name}) on {tspec.name}: {e}")
 
+    # B2: append plate reverb if track has a reverb estimate
+    if tspec.reverb_rt60_s is not None:
+        try:
+            from ..production_analysis import ReverbEstimate
+            est = ReverbEstimate(
+                rt60_seconds=float(tspec.reverb_rt60_s),
+                wet_ratio=float(tspec.reverb_wet or 0.2),
+                confidence=1.0,
+            )
+            params = est.to_plate_reverb_params()
+            plugin_tools.plugin_add_reverb({
+                "track_id": tid, "type": "plate",
+                "size": params["size"], "decay": params["decay"],
+                "mix": params["mix"], "high_damp": 0.5,
+            })
+        except Exception as e:
+            warnings.append(f"plate reverb add on {tspec.name}: {e}")
+
+    # B3: pan automation breakpoints
+    if tspec.pan_automation:
+        try:
+            from . import automation as auto_tools
+            points = [{"beat": float(b), "value": float(v)}
+                      for b, v in tspec.pan_automation]
+            auto_tools.automation_add({
+                "track_id": tid, "target": "pan", "points": points,
+            })
+        except Exception as e:
+            warnings.append(f"pan automation on {tspec.name}: {e}")
+
+    # Note: volume_automation on TrackSpec is currently a no-op at the
+    # builder level — Waveform's volume plugin doesn't honor our
+    # AUTOMATIONCURVE schema and the track goes silent. The spec field
+    # is preserved for future work (multi-clip ride approach) and so
+    # callers can hand-edit it. We surface a one-line warning so
+    # downstream users know the field was seen but not applied.
+    if tspec.volume_automation:
+        warnings.append(
+            f"volume_automation on {tspec.name} ignored — Waveform's volume "
+            "plugin breaks under our AUTOMATIONCURVE schema. Use mix_offset_db "
+            "for static rides or split into multiple sections."
+        )
+
+    # B2: append a ducking compressor to approximate sidechain pumping.
+    # Tracktion doesn't expose true sidechaining at the model layer, so we
+    # use a fast-attack compressor on the pumped track. It's a heuristic —
+    # produces a pumping *feel* triggered by the track's own loud transients,
+    # which on bass/pad tracks coincide with kick onsets enough to read as
+    # "pumpy."
+    if tspec.sidechain_to_drums:
+        try:
+            from ..model import Plugin
+            STORE.edit.track(tid).plugins.append(Plugin(
+                id=_id("plg"), type="comp", name="Pump",
+                params={"threshold": -18.0, "ratio": 6.0, "attack": 1.0,
+                        "release": 120.0, "knee": 1.0, "outputDb": 0.0, "rms": 0},
+            ))
+        except Exception as e:
+            warnings.append(f"sidechain comp add on {tspec.name}: {e}")
+
     # Content
     if tspec.kind == "audio":
         if tspec.audio_path:

@@ -28,6 +28,7 @@ from typing import Any
 
 from ..composition_spec import CompositionSpec
 from ..reference_adapter import AdapterOptions, spec_from_analyzer_json
+from .. import poly_transcribe
 from .compose_from_spec import compose_from_spec
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,35 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"adapter failed: {e}",
                 "analyzer_json": json_path}
 
+    # ── Phase B1: BasicPitch poly transcription ──
+    # If basic-pitch is available, transcribe the audio file and overwrite
+    # the chord-tone placeholders on melodic tracks with real notes.
+    transcription_info: dict[str, Any] = {"used": False}
+    if bool(args.get("transcribe", True)):
+        if poly_transcribe.is_available():
+            try:
+                tr = poly_transcribe.transcribe(
+                    str(audio_path), bpm=spec.tempo_bpm,
+                )
+                if tr.ok and tr.notes:
+                    counts = poly_transcribe.populate_spec_tracks_from_transcription(
+                        spec.tracks, tr.notes, overwrite=True,
+                    )
+                    transcription_info = {
+                        "used": True, "note_count": len(tr.notes),
+                        "per_role": counts,
+                    }
+                    spec.provenance["basic_pitch"] = transcription_info
+                else:
+                    transcription_info = {"used": False, "reason": tr.error}
+                    spec.provenance.setdefault("warnings", []).append(
+                        f"basic-pitch failed: {tr.error}")
+            except Exception as e:
+                logger.exception("basic-pitch transcription failed")
+                transcription_info = {"used": False, "reason": str(e)}
+        else:
+            transcription_info = {"used": False, "reason": "basic-pitch not installed"}
+
     return {
         "ok": True,
         "spec": spec.to_dict(),
@@ -257,6 +287,7 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
             "total_bars": spec.total_length_bars,
         },
         "fidelity_caveats": spec.provenance.get("fidelity_caveats", []),
+        "transcription": transcription_info,
     }
 
 
@@ -294,6 +325,7 @@ def compose_from_reference(args: dict[str, Any]) -> dict[str, Any]:
         "analyzer_json": spec_res["analyzer_json"],
         "summary": spec_res["summary"],
         "fidelity_caveats": spec_res["fidelity_caveats"],
+        "transcription": spec_res.get("transcription"),
     }
 
 
@@ -356,6 +388,8 @@ TOOLS = [
                 "force_genre": {"type": "string"},
                 "bars_override": {"type": "integer"},
                 "skip_pad": {"type": "boolean"},
+                "transcribe": {"type": "boolean", "default": True,
+                                "description": "Use basic-pitch to transcribe melodic content if installed"},
                 "timeout_seconds": {"type": "number", "default": 600},
             },
             "required": ["audio_path"],
