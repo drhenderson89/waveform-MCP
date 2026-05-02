@@ -496,6 +496,11 @@ JAZZ_VOICINGS = {
     36: [64, 71, 74],   # Cmaj7
 }
 
+# Populated per-call by compose_lofi_track when args["chord_progression"]
+# overrides the default Fmaj7-Am7-Dm7-Cmaj7 set. Maps bass_root → 7th
+# interval (10 for min7, 11 for maj7). Empty dict means no override.
+_SEVENTH_INTERVAL_OVERRIDE: dict[int, int] = {}
+
 
 def _chord_progression(start_bar: int, bars: int, chords: list[list[int]], chord_keys: list[int]) -> list[dict]:
     """Jazz piano comping.
@@ -722,6 +727,11 @@ def _pad_notes(start_bar: int, bars: int, chord_keys: list[int]) -> list[dict]:
         38: 10,   # Dm7    → C
         36: 11,   # Cmaj7  → B
     }
+    # Per-call override populated by compose_lofi_track when caller
+    # passes a custom `chord_progression`. Lets callers introduce
+    # chords with arbitrary 7th intervals without editing this table.
+    if _SEVENTH_INTERVAL_OVERRIDE:
+        SEVENTH_INTERVAL = {**SEVENTH_INTERVAL, **_SEVENTH_INTERVAL_OVERRIDE}
     notes = []
     for bar in range(bars):
         b = start_bar * 4 + bar * 4
@@ -1061,23 +1071,40 @@ def compose_lofi_track(args: dict) -> dict:
     pad_preset = args.get("pad_preset", DEFAULT_PRESETS["pad"])
     bass_octave_offset = int(args.get("bass_octave_offset", 1))
 
-    # Fmaj7 - Am7 - Dm7 - Cmaj7 — classic lofi cadence.
-    # `chord_keys` are the canonical chord-root MIDI numbers used as lookup
-    # keys for JAZZ_VOICINGS and SEVENTH_INTERVAL.
-    # `bass_pitches` is what the bass actually plays — transposed by
-    # bass_octave_offset to land in the right register *after* the factory
-    # preset's tune1=-12 detune. Default offset=+1 → roots at F3/A3/D3/C3
-    # which sound at F2/A2/D2/C2 (proper bass-guitar range). Offset=0 sounds
-    # at F1/A1 — sub-bass-mud territory.
-    chord_keys = [41, 45, 38, 36]
+    # Default progression: Fmaj7 - Am7 - Dm7 - Cmaj7 (classic lofi cadence).
+    # Override via args["chord_progression"] — a list of chord descriptors:
+    #   [{"bass_root": int, "voicing": [3 MIDI notes], "seventh_interval": 10|11}, ...]
+    # All bass_roots in the progression must be distinct (the downstream
+    # composition helpers look up by root). Voicings are 3-note rootless
+    # 3-7-9 stacks the keys part will play.
+    progression = args.get("chord_progression")
+    if progression:
+        # Register the override into the module-level lookup tables so
+        # _chord_progression / _pad_notes find them. Existing keys with
+        # the same root are overwritten — the override wins for this call.
+        for chord in progression:
+            root = int(chord["bass_root"])
+            JAZZ_VOICINGS[root] = list(chord["voicing"])
+        chord_keys = [int(c["bass_root"]) for c in progression]
+        chords = [list(c["voicing"]) for c in progression]
+        # Patch SEVENTH_INTERVAL inside _pad_notes via a side channel:
+        # _pad_notes builds its own dict locally, so we route the user's
+        # seventh_intervals through a module-level override map.
+        global _SEVENTH_INTERVAL_OVERRIDE
+        _SEVENTH_INTERVAL_OVERRIDE = {
+            int(c["bass_root"]): int(c.get("seventh_interval", 11))
+            for c in progression
+        }
+    else:
+        chord_keys = [41, 45, 38, 36]
+        chords = [
+            [53, 57, 60, 64],   # Fmaj7
+            [57, 60, 64, 67],   # Am7
+            [50, 53, 57, 60],   # Dm7
+            [48, 52, 55, 59],   # Cmaj7
+        ]
     octave = bass_octave_offset * 12
     bass_pitches = [k + octave for k in chord_keys]
-    chords = [
-        [53, 57, 60, 64],   # Fmaj7  (used by older _chord_progression sig)
-        [57, 60, 64, 67],   # Am7
-        [50, 53, 57, 60],   # Dm7
-        [48, 52, 55, 59],   # Cmaj7
-    ]
 
     # 1. Create edit
     edit_tools.edit_create({
