@@ -757,19 +757,97 @@ def waveform_render_to_mp3(args: dict) -> dict:
             "wav": str(new_wav),
         }
 
+    # Auto-trim trailing silence. Waveform's UI render dialog often
+    # uses a stale OUT marker that extends past the song's actual
+    # content, baking minutes of silence onto the end of the export.
+    # Default on; pass `trim_trailing_silence=False` to keep the raw
+    # export. Threshold defaults to -50 dB and stop_duration 2 s, so
+    # natural reverb tails / soft fades aren't truncated.
+    trim_silence = bool(args.get("trim_trailing_silence", True))
+    duration_before = duration_after = None
+    if trim_silence:
+        threshold_db = float(args.get("trim_silence_threshold_db", -50.0))
+        stop_duration_sec = float(args.get("trim_silence_stop_duration_sec", 2.0))
+        before, after = _trim_mp3_trailing_silence(
+            mp3, ffmpeg, threshold_db=threshold_db,
+            stop_duration_sec=stop_duration_sec,
+        )
+        duration_before, duration_after = before, after
+
     if not keep_wav:
         try:
             new_wav.unlink()
         except OSError:
             pass
 
-    return {
+    result = {
         "ok": True,
         "mp3": str(mp3),
         "wav": str(new_wav) if keep_wav else None,
         "size_bytes": mp3.stat().st_size,
         "bitrate": bitrate,
     }
+    if duration_before is not None:
+        result["duration_before_trim_sec"] = duration_before
+        result["duration_after_trim_sec"] = duration_after
+    return result
+
+
+def _trim_mp3_trailing_silence(
+    mp3: "Path", ffmpeg: "Path", *,
+    threshold_db: float = -50.0,
+    stop_duration_sec: float = 2.0,
+) -> tuple[float | None, float | None]:
+    """Strip trailing silence from an MP3 in place using ffmpeg's
+    `silenceremove` filter. Returns (duration_before, duration_after)
+    in seconds, or (None, None) if the operation failed.
+
+    Uses stop_periods=-1 (strip all silent chunks past the start),
+    stop_duration=N seconds, stop_threshold=THRESHOLD dB. Re-encodes
+    to the same bitrate to preserve quality.
+    """
+    import subprocess
+    if not mp3.exists():
+        return None, None
+
+    # Probe original duration via ffprobe (fall back to ffmpeg parsing)
+    def _probe_duration(path: "Path") -> float | None:
+        proc = subprocess.run(
+            [str(ffmpeg), "-i", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        # ffmpeg writes "Duration: HH:MM:SS.ms" to stderr
+        import re as _re
+        m = _re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", proc.stderr)
+        if m:
+            h, mm, s = m.groups()
+            return int(h) * 3600 + int(mm) * 60 + float(s)
+        return None
+
+    before = _probe_duration(mp3)
+    tmp = mp3.with_suffix(".trim_tmp.mp3")
+    proc = subprocess.run(
+        [str(ffmpeg), "-y", "-i", str(mp3),
+         "-af",
+         f"silenceremove=stop_periods=-1:stop_duration={stop_duration_sec}"
+         f":stop_threshold={threshold_db}dB",
+         "-codec:a", "libmp3lame", "-b:a", "256k", str(tmp)],
+        capture_output=True, text=True, timeout=180,
+    )
+    if proc.returncode != 0 or not tmp.exists():
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return before, before  # original kept; trim failed silently
+    try:
+        # Replace original with trimmed
+        mp3.unlink()
+        tmp.rename(mp3)
+    except Exception:
+        return before, before
+    after = _probe_duration(mp3)
+    return before, after
 
 
 def waveform_build_skeleton(args: dict) -> dict:
