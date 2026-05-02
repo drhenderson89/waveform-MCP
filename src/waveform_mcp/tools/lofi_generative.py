@@ -172,8 +172,9 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
                 "humanize": True, "seed": seed * 31 + cursor_bar,
             })
             drum_notes.extend(r.get("notes", []))
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("layer generation failed: %s", e)
         cursor_bar += sec_bars
     if drum_notes:
         midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
@@ -282,8 +283,9 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
                     "length_beats": float(n["length_beats"]),
                     "velocity": int(n.get("velocity", 80)),
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("layer generation failed: %s", e)
         cursor_bar += sec_bars
     if melody_notes_all:
         midi_tools.midi_notes_add({"clip_id": mel_clip, "notes": melody_notes_all})

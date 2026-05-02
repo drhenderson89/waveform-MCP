@@ -134,13 +134,23 @@ TOOLS: list[dict[str, Any]] = [
 # ---------- helpers ----------
 
 
+_MODE_ALIASES = {
+    "minor":   "natural_minor",   # callers commonly say "minor" when they
+    "min":     "natural_minor",   #   mean "natural_minor"
+    "maj":     "major",
+}
+
+
 def _scale_pitches(root: str, mode: str, octave: int, span_octaves: int = 2) -> list[int]:
     """Return a list of MIDI pitches in the given scale, spanning N octaves
     starting at `octave`. e.g. ('A', 'natural_minor', 4, 2) returns ascending
     A natural-minor pitches from A4 up across 2 octaves.
+
+    Accepts shorthand aliases ("minor" → "natural_minor", etc.).
     """
     if root not in data.NOTE_NAMES:
         raise ValueError(f"unknown root: {root}")
+    mode = _MODE_ALIASES.get(mode, mode)
     if mode not in data.SCALES:
         raise ValueError(f"unknown mode: {mode}")
     intervals = data.SCALES[mode]

@@ -159,11 +159,47 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
                 "humanize": True, "seed": seed * 37 + cursor_bar,
             })
             drum_notes.extend(r.get("notes", []))
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("layer generation failed: %s", e)
         cursor_bar += sec_bars
     if drum_notes:
         midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
+
+    # --- 5b. Drum fills on the last bar of each section (transitions) ---
+    fill_notes: list[dict] = []
+    cursor_bar = 0
+    for sec_idx, sec in enumerate(sections_plan):
+        sec_bars = sec["bars"]
+        # Place a fill at the end of any section that's followed by a
+        # higher-energy or different section. Skip outro.
+        is_last = sec_idx == len(sections_plan) - 1
+        if is_last or sec_bars < 4:
+            cursor_bar += sec_bars
+            continue
+        if sec["role"] in ("intro", "outro"):
+            cursor_bar += sec_bars
+            continue
+        # Last bar of this section → snare roll + crash on next downbeat
+        fill_bar = cursor_bar + sec_bars - 1
+        # 16th-note snare roll across the bar
+        for i in range(16):
+            fill_notes.append({
+                "pitch": 38,  # snare
+                "start_beats": float(fill_bar * 4 + i * 0.25),
+                "length_beats": 0.2,
+                "velocity": 70 + int(i * 2.5),  # crescendo
+            })
+        # Crash on the downbeat of the next section
+        fill_notes.append({
+            "pitch": 49,  # crash
+            "start_beats": float((fill_bar + 1) * 4),
+            "length_beats": 1.0,
+            "velocity": 110,
+        })
+        cursor_bar += sec_bars
+    if fill_notes:
+        midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": fill_notes})
 
     # --- 6. Bass — 4OSC + clean-gain comp; locked to kick ---
     bass_id = track_tools.track_add({"name": "Bass", "kind": "midi"})["track_id"]
@@ -189,9 +225,32 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         bass_octave=0,
         velocity=100,    # synthwave bass should hit
     )
+    # Section-aware bass enrichment: chorus sections get octave-jump
+    # accents (every other note up an octave for energy), bridge gets
+    # a chord-tone walk (+3rd or +5th on weak beats).
     if bass_notes_locked:
-        midi_tools.midi_notes_add({"clip_id": bass_clip,
-                                    "notes": bass_notes_locked})
+        enriched = []
+        for n in bass_notes_locked:
+            sec = _section_at_bar(sections_plan, int(n["start_beats"] // 4))
+            if not sec:
+                enriched.append(n)
+                continue
+            role = sec["role"]
+            if role.startswith("chorus"):
+                # Alternate root and root+12
+                beat_in_bar = n["start_beats"] % 4
+                if beat_in_bar > 1.99:    # back half of bar gets the octave jump
+                    n = dict(n)
+                    n["pitch"] = int(n["pitch"]) + 12
+                    n["velocity"] = min(127, int(n["velocity"]) + 5)
+            elif role == "bridge":
+                # Walk to the chord 5th on beat 3
+                beat_in_bar = n["start_beats"] % 4
+                if 2.4 < beat_in_bar < 3.1:
+                    n = dict(n)
+                    n["pitch"] = int(n["pitch"]) + 7
+            enriched.append(n)
+        midi_tools.midi_notes_add({"clip_id": bass_clip, "notes": enriched})
 
     # --- 7. Pad — sustained chord tones, soft attack ---
     pad_id = track_tools.track_add({"name": "Pad", "kind": "midi"})["track_id"]
@@ -220,25 +279,42 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
     arp_notes = []
-    arp_direction = rng.choice(["up", "down", "up_down"])
+    # Per-section arp direction so each section feels different
+    section_arp_directions = {
+        "intro":     "up",
+        "verse":     "up",
+        "chorus":    "up_down",
+        "chorus_a":  "up_down",
+        "chorus_b":  "up_down",
+        "bridge":    "down",
+        "buildup":   "up",
+        "breakdown": "up",
+        "outro":     "up",
+    }
+    arp_direction = rng.choice(["up", "down", "up_down"])  # fallback
     for bar in range(total_bars):
-        # Mute arp during intro/outro
         sec = _section_at_bar(sections_plan, bar)
         if sec and sec["role"] in ("intro", "outro"):
             continue
         chord = progression_chords[bar % len(progression_chords)]
+        section_role = sec["role"] if sec else "verse"
+        direction = section_arp_directions.get(section_role, arp_direction)
+        # Choruses get a busier 16th-note arp; verses keep 8ths
+        rate = 0.25 if section_role.startswith("chorus") else 0.5
         try:
             r = mel_tools.arp_pattern({
                 "chord_pitches": [chord["bass_root"] + 12] + list(chord["voicing"]),
                 "length_beats": 4.0,
-                "rate_beats": 0.5,    # 8th-note arp
-                "direction": arp_direction,
+                "rate_beats": rate,
+                "direction": direction,
                 "octave_offset": 1,
                 "start_beats": float(bar * 4),
             })
             arp_notes.extend(r.get("notes", []))
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "arp_pattern failed at bar %d: %s", bar, e)
     midi_tools.midi_notes_add({"clip_id": arp_clip, "notes": arp_notes})
 
     # --- 9. Lead — per-section melody with quantization ---
@@ -277,8 +353,9 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
                     "length_beats": float(n["length_beats"]),
                     "velocity": int(n.get("velocity", 90)),
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("layer generation failed: %s", e)
         cursor_bar += sec_bars
     if lead_notes_all:
         midi_tools.midi_notes_add({"clip_id": lead_clip, "notes": lead_notes_all})
