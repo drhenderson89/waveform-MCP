@@ -137,6 +137,12 @@ class DrumPatternSpec:
     # CompositionSpec.sections. If unset, the same pattern applies
     # everywhere this DrumPatternSpec is referenced.
     section_variants: dict[int, list[NoteEvent]] = field(default_factory=dict)
+    # Beat at which drums first enter. Iterations of the loop whose
+    # entire bar falls before this point are skipped. Use to delay
+    # drums past an intro section.
+    start_beat: float = 0.0
+    # Beat at which drums stop. None means "play to end of song".
+    end_beat: float | None = None
 
 
 @dataclass
@@ -298,6 +304,8 @@ class CompositionSpec:
                     int(k): [_parse_note(n) for n in v]
                     for k, v in (d.get("section_variants") or {}).items()
                 },
+                start_beat=float(d.get("start_beat", 0.0)),
+                end_beat=(float(d["end_beat"]) if d.get("end_beat") is not None else None),
             )
 
         def _parse_chain(d: dict | None) -> PluginChainSpec:

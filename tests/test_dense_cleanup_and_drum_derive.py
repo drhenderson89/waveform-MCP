@@ -8,6 +8,7 @@ from waveform_mcp.reference_adapter import (
     _basic_backbeat_pattern,
     _clean_dense_role,
     _derive_drum_pattern_from_onsets,
+    _replicate_lead_phrase,
     _staccato,
 )
 
@@ -230,3 +231,77 @@ class TestBackbeat:
         out = _basic_backbeat_pattern(bar_beats=4)
         for n in out:
             assert 0.0 <= n.start_beat < 4.0
+
+
+# --------------------------------------------------------------------------- #
+# _replicate_lead_phrase                                                      #
+# --------------------------------------------------------------------------- #
+
+
+class TestReplicateLeadPhrase:
+    def test_paste_into_empty_window(self):
+        # Anchor phrase: dense at beats 100..132 (8 bars in 4/4)
+        phrase = [NoteEvent(start_beat=100 + i, length_beats=0.5,
+                             pitch=72, velocity=90)
+                  for i in range(8)]
+        # Earlier 32 beats are completely empty
+        out = _replicate_lead_phrase(
+            phrase, bpm=120, bar_beats=4,
+            anchor_beat=100.0, phrase_bars=8,
+            song_end_beat=200.0, min_bars_silent=8,
+        )
+        # Original phrase still there
+        anchor_notes = [n for n in out if 100 <= n.start_beat < 132]
+        assert len(anchor_notes) == len(phrase)
+        # New notes added in sparse early/mid windows
+        early_notes = [n for n in out if 0 <= n.start_beat < 32]
+        assert len(early_notes) > 0
+
+    def test_does_not_overwrite_anchor_region(self):
+        phrase = [NoteEvent(start_beat=100 + i, length_beats=0.5, pitch=72)
+                  for i in range(8)]
+        out = _replicate_lead_phrase(
+            phrase, bpm=120, bar_beats=4,
+            anchor_beat=100.0, phrase_bars=8, song_end_beat=200.0,
+        )
+        # Notes at 100..132 should equal exactly the original (no
+        # duplicates pasted into the anchor)
+        anchor = [n for n in out if 100 <= n.start_beat < 132]
+        assert len(anchor) == 8
+
+    def test_dense_window_left_alone(self):
+        # The 32..64 scan window contains 20 existing notes — algorithm
+        # checks per-window density and won't paste into windows that
+        # already have ≥2 notes.
+        existing = [NoteEvent(start_beat=32 + i*0.5, length_beats=0.25,
+                                pitch=72)
+                    for i in range(20)]  # all in [32, 42)
+        phrase_anchor = [NoteEvent(start_beat=100 + i, length_beats=0.5,
+                                     pitch=72)
+                          for i in range(8)]
+        before_count = len(existing)
+        out = _replicate_lead_phrase(
+            existing + phrase_anchor, bpm=120, bar_beats=4,
+            anchor_beat=100.0, phrase_bars=8, song_end_beat=200.0,
+            min_bars_silent=8,
+        )
+        # Notes within the densely-populated [32, 42) range should equal
+        # exactly the original — no overlay there.
+        in_dense = [n for n in out if 32 <= n.start_beat < 42]
+        assert len(in_dense) == before_count
+
+    def test_no_phrase_at_anchor_returns_unchanged(self):
+        # Anchor region empty → can't extract a phrase, just return notes
+        notes = [NoteEvent(start_beat=10, length_beats=0.5, pitch=72)]
+        out = _replicate_lead_phrase(
+            notes, bpm=120, bar_beats=4,
+            anchor_beat=100.0, phrase_bars=8, song_end_beat=200.0,
+        )
+        assert out == notes
+
+    def test_empty_input(self):
+        out = _replicate_lead_phrase(
+            [], bpm=120, bar_beats=4,
+            anchor_beat=100, phrase_bars=8, song_end_beat=200,
+        )
+        assert out == []

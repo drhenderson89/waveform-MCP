@@ -260,6 +260,7 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                     from ..reference_adapter import (
                         _quantize_notes, _dedupe_overlapping,
                         _staccato, _basic_backbeat_pattern,
+                        _replicate_lead_phrase,
                     )
                     from ..composition_spec import DrumPatternSpec
 
@@ -283,11 +284,16 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                         )
                         keys_count = len(keys_track.notes)
 
-                    # Drums: simple, conservative backbeat. Histogram-
-                    # derived patterns gave near-uniform results from
-                    # BasicPitch's sustained-note phantom onsets, which
-                    # produced machine-gun kicks. Static backbeat just
-                    # works.
+                    # Determine intro cutoff. User wants drums in at the
+                    # 17-second mark and lead silent during the intro.
+                    # We snap to the nearest bar so everything stays on
+                    # the same grid.
+                    bar = float(spec.time_sig_num)
+                    intro_seconds = float(args.get("intro_seconds", 17.0))
+                    intro_end_beat = intro_seconds * spec.tempo_bpm / 60.0
+                    intro_end_beat = round(intro_end_beat / bar) * bar
+
+                    # Drums: simple backbeat that enters at intro_end_beat.
                     drum_notes = _basic_backbeat_pattern(spec.time_sig_num)
                     drums_track = next((t for t in spec.tracks
                                         if t.role == "drums"), None)
@@ -295,15 +301,42 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                         drums_track.drum_pattern = DrumPatternSpec(
                             notes=drum_notes,
                             loop_length_beats=float(spec.time_sig_num),
+                            start_beat=intro_end_beat,
                         )
 
-                    # Mix balance: keys and lead carry the song's
-                    # melodic content for the cover, so push them up
-                    # over the genre-default mix. Without this, lead
-                    # tends to drown under the pad and keys.
+                    # Lead: silence during intro. Drop notes before
+                    # intro_end_beat so the cover's lead doesn't preview
+                    # itself before the song's body begins.
+                    lead_track = next((t for t in spec.tracks
+                                       if t.role in ("lead", "melody")), None)
+                    if lead_track and lead_track.notes:
+                        lead_track.notes = [
+                            n for n in lead_track.notes
+                            if n.start_beat >= intro_end_beat
+                        ]
+                        # Replicate a dense 8-bar phrase (around 2:48 by
+                        # default) into sparse later sections.
+                        replicate_seconds = float(args.get(
+                            "lead_replicate_anchor_seconds", 168.0))
+                        lead_track.notes = _replicate_lead_phrase(
+                            lead_track.notes,
+                            spec.tempo_bpm, bar,
+                            anchor_beat=replicate_seconds * spec.tempo_bpm / 60.0,
+                            phrase_bars=8,
+                            song_end_beat=spec.total_length_beats,
+                            min_bars_silent=8,
+                        )
+
+                    # Mix balance — user-tuned offsets:
+                    #   keys / lead: prominent (carry the song)
+                    #   pad: tucked underneath (was bleeding through)
                     for t in spec.tracks:
                         if t.role in ("keys", "lead", "melody"):
-                            t.mix_offset_db = (t.mix_offset_db or 0.0) + 6.0
+                            # Already +6 in earlier versions; users
+                            # asked for "more" → land at +10
+                            t.mix_offset_db = (t.mix_offset_db or 0.0) + 10.0
+                        elif t.role in ("pad", "ambience"):
+                            t.mix_offset_db = (t.mix_offset_db or 0.0) - 6.0
 
                     transcription_info = {
                         "used": True, "note_count_raw": len(tr.notes),
@@ -312,7 +345,11 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                         "keys_staccato_count": keys_count,
                         "drum_pattern": "static_backbeat",
                         "drum_hits": len(drum_notes),
-                        "keys_lead_boost_db": 6.0,
+                        "drum_start_beat": intro_end_beat,
+                        "lead_silenced_until_beat": intro_end_beat,
+                        "lead_final_count": len(lead_track.notes) if lead_track else 0,
+                        "keys_lead_boost_db": 10.0,
+                        "pad_attenuation_db": -6.0,
                         "grid": "16th",
                     }
                     spec.provenance["basic_pitch"] = transcription_info

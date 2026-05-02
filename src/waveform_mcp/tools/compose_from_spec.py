@@ -320,11 +320,24 @@ def _lay_drum_pattern(track_id: str, pat: DrumPatternSpec,
     if not pat.notes and not pat.section_variants:
         return
 
+    # Snap drum start to a bar boundary so the loop's beat-1 lands on
+    # the song's bar grid (matches everything else laid by the builder).
+    drum_start = max(0.0, float(pat.start_beat or 0.0))
+    bar = float(pat.loop_length_beats) if pat.loop_length_beats > 0 else 4.0
+    if drum_start > 0:
+        drum_start = round(drum_start / bar) * bar
+
+    drum_end = float(pat.end_beat) if pat.end_beat is not None else float(total_beats)
+    drum_end = min(drum_end, float(total_beats))
+    if drum_end <= drum_start:
+        return  # silent throughout
+
+    clip_length = drum_end - drum_start
     try:
         clip = midi_tools.midi_clip_add({
             "track_id": track_id,
-            "start_beats": 0.0,
-            "length_beats": float(total_beats),
+            "start_beats": float(drum_start),
+            "length_beats": float(clip_length),
             "name": "Drums",
         })["clip_id"]
     except Exception as e:
@@ -341,34 +354,36 @@ def _lay_drum_pattern(track_id: str, pat: DrumPatternSpec,
         return None
 
     midi_notes: list[dict] = []
-    n_iters = int(_ceil_div(total_beats, pat.loop_length_beats))
+    # Iterate over LOOPS within the clip. Each loop is positioned
+    # relative to the clip's own start (which is at drum_start in the
+    # song timeline), so MIDI note positions inside the clip start at 0.
+    n_iters = int(_ceil_div(clip_length, pat.loop_length_beats))
     for k in range(n_iters):
-        offset = k * pat.loop_length_beats
-        if offset >= total_beats:
+        clip_offset = k * pat.loop_length_beats
+        song_offset = drum_start + clip_offset
+        if clip_offset >= clip_length:
             break
 
-        # Variant lookup: which section is this iteration's start in?
-        sec_idx = section_for(offset)
+        sec_idx = section_for(song_offset)
         notes_for_iter = (pat.section_variants.get(sec_idx, pat.notes)
                           if sec_idx is not None else pat.notes)
         if not notes_for_iter:
             continue
 
-        # Section density modulates velocity — quieter intros, louder choruses
         vel_scale = 1.0
         if sec_idx is not None and sec_idx < len(sorted_sections):
             vel_scale = 0.6 + 0.4 * float(sorted_sections[sec_idx].density)
 
         for n in notes_for_iter:
-            start = offset + n.start_beat
-            if start >= total_beats:
+            in_clip = clip_offset + n.start_beat
+            if in_clip >= clip_length:
                 continue
-            length = min(n.length_beats, total_beats - start)
+            length = min(n.length_beats, clip_length - in_clip)
             if length <= 0:
                 continue
             midi_notes.append({
                 "pitch": int(n.pitch),
-                "start_beats": float(start),
+                "start_beats": float(in_clip),
                 "length_beats": float(length),
                 "velocity": _clip(int(n.velocity * vel_scale), 1, 127),
             })

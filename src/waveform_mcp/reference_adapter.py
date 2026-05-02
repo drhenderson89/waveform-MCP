@@ -502,6 +502,88 @@ def _clean_dense_role(notes: list[NoteEvent], *,
     return out
 
 
+def _replicate_lead_phrase(
+    notes: list[NoteEvent],
+    bpm: float,
+    bar_beats: float,
+    *,
+    anchor_beat: float,
+    phrase_bars: int = 8,
+    song_end_beat: float,
+    min_bars_silent: int = 8,
+) -> list[NoteEvent]:
+    """Take a dense lead phrase from around `anchor_beat` and replicate
+    it into sparser regions of the song so the lead doesn't disappear
+    for long stretches.
+
+    Algorithm:
+      1. Extract notes within [anchor_beat, anchor_beat + phrase_bars*bar_beats].
+         Re-position them so their first note is at offset 0 within the phrase.
+      2. Walk the timeline in `min_bars_silent`-bar windows. In any window
+         that has < 1 note, paste the phrase (cropped to fit the window).
+      3. Skip the original phrase region — don't overwrite where the
+         pattern came from.
+
+    Returns a new list combining the original notes plus the replicated
+    phrases. Doesn't mutate input.
+    """
+    if not notes or song_end_beat <= 0 or phrase_bars <= 0:
+        return list(notes)
+
+    phrase_len = phrase_bars * bar_beats
+    anchor_start = max(0.0, anchor_beat)
+    anchor_end = anchor_start + phrase_len
+
+    # 1. Pull the phrase: notes within the anchor window
+    phrase = [n for n in notes
+              if anchor_start <= n.start_beat < anchor_end]
+    if not phrase:
+        return list(notes)
+    phrase.sort(key=lambda n: n.start_beat)
+    phrase_first = phrase[0].start_beat
+    # Normalise to start at 0
+    norm_phrase = [
+        NoteEvent(
+            start_beat=n.start_beat - phrase_first,
+            length_beats=n.length_beats, pitch=n.pitch,
+            velocity=n.velocity, channel=n.channel,
+        )
+        for n in phrase
+    ]
+
+    # 2. Scan timeline in min_bars_silent-bar windows; paste phrase into empty ones
+    window_len = min_bars_silent * bar_beats
+    by_start_sorted = sorted(notes, key=lambda n: n.start_beat)
+    out: list[NoteEvent] = list(notes)
+    cursor = 0.0
+    while cursor + window_len <= song_end_beat:
+        window_end = cursor + window_len
+        # Skip the original phrase region
+        if not (window_end <= anchor_start or cursor >= anchor_end):
+            cursor += window_len
+            continue
+        notes_in_window = [n for n in by_start_sorted
+                           if cursor <= n.start_beat < window_end]
+        if len(notes_in_window) < 2:
+            # Sparse — paste the phrase here
+            paste_offset = cursor
+            for pn in norm_phrase:
+                new_start = paste_offset + pn.start_beat
+                if new_start >= window_end or new_start >= song_end_beat:
+                    break
+                out.append(NoteEvent(
+                    start_beat=new_start,
+                    length_beats=min(pn.length_beats,
+                                     window_end - new_start),
+                    pitch=pn.pitch, velocity=pn.velocity,
+                    channel=pn.channel,
+                ))
+        cursor += window_len
+
+    out.sort(key=lambda n: n.start_beat)
+    return out
+
+
 def _staccato(notes: list[NoteEvent], *, max_length_beats: float = 0.25,
               ratio: float = 0.6) -> list[NoteEvent]:
     """Shorten every note's length so successive notes have a clear
