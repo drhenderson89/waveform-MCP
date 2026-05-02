@@ -278,37 +278,64 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "track_id": arp_id, "name": "Arp",
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
+    # Arp variety. Earlier version had two bugs and zero per-bar
+    # variation:
+    #   * rate_beats / octave_offset args silently ignored (arp_pattern
+    #     uses `rate` (string) and `octaves` (int)) — every bar fell
+    #     through to default sixteenth/up/octaves=2.
+    #   * Direction was section-fixed; whole sections played identical
+    #     patterns.
+    # Now: rate per section (eighth in verse, sixteenth in chorus,
+    # triplet in bridge), direction CHANGES every 2-bar phrase within
+    # a section, octave count flips between 1 and 2 per phrase, and
+    # chorus rolls "octave_alternate" or "random" for extra motion.
     arp_notes = []
-    # Per-section arp direction so each section feels different
-    section_arp_directions = {
-        "intro":     "up",
-        "verse":     "up",
-        "chorus":    "up_down",
-        "chorus_a":  "up_down",
-        "chorus_b":  "up_down",
-        "bridge":    "down",
-        "buildup":   "up",
-        "breakdown": "up",
-        "outro":     "up",
+    section_rate = {
+        "intro": "eighth",
+        "verse": "eighth",
+        "chorus": "sixteenth",
+        "chorus_a": "sixteenth",
+        "chorus_b": "sixteenth",
+        "bridge": "triplet",
+        "buildup": "sixteenth",
+        "breakdown": "eighth",
+        "outro": "eighth",
     }
-    arp_direction = rng.choice(["up", "down", "up_down"])  # fallback
+    # Per-section direction pool — picked from each 2-bar phrase
+    section_dir_pool = {
+        "intro":     ["up"],
+        "verse":     ["up", "up_down"],
+        "chorus":    ["up_down", "octave_alternate", "random"],
+        "chorus_a":  ["up_down", "octave_alternate"],
+        "chorus_b":  ["random", "up_down", "octave_alternate"],
+        "bridge":    ["down", "down_up"],
+        "buildup":   ["up", "up"],     # straight ascent for tension
+        "breakdown": ["down"],
+        "outro":     ["down", "down"],
+    }
     for bar in range(total_bars):
         sec = _section_at_bar(sections_plan, bar)
         if sec and sec["role"] in ("intro", "outro"):
             continue
         chord = progression_chords[bar % len(progression_chords)]
         section_role = sec["role"] if sec else "verse"
-        direction = section_arp_directions.get(section_role, arp_direction)
-        # Choruses get a busier 16th-note arp; verses keep 8ths
-        rate = 0.25 if section_role.startswith("chorus") else 0.5
+        rate = section_rate.get(section_role, "eighth")
+        # Phrase index = bar // 2, picks a direction from the pool.
+        phrase_idx = bar // 2
+        pool = section_dir_pool.get(section_role, ["up"])
+        direction = pool[phrase_idx % len(pool)]
+        # Octave count alternates per phrase (1 octave for tighter feel,
+        # 2 for sweeping feel)
+        octaves = 1 + (phrase_idx % 2)
         try:
             r = mel_tools.arp_pattern({
                 "chord_pitches": [chord["bass_root"] + 12] + list(chord["voicing"]),
                 "length_beats": 4.0,
-                "rate_beats": rate,
+                "rate": rate,
                 "direction": direction,
-                "octave_offset": 1,
+                "octaves": octaves,
                 "start_beats": float(bar * 4),
+                "velocity_base": 80,
             })
             arp_notes.extend(r.get("notes", []))
         except Exception as e:
@@ -514,7 +541,7 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "sections": [s["role"] for s in sections_plan],
         "bass_feel": bass_feel,
         "energy_curve": energy_curve,
-        "arp_direction": arp_direction,
+        "arp_directions": "varies per 2-bar phrase",
         "chord_roots": [int(c["bass_root"]) for c in progression_chords],
         "optional_layers": optional_layers,
         "track_count": 5 + sum(optional_layers.values()),
