@@ -376,6 +376,118 @@ def _seconds_to_beats(seconds: float, bpm: float) -> float:
     return seconds * (bpm / 60.0)
 
 
+# --------------------------------------------------------------------------- #
+# Timing helpers — meter inference + quantization                             #
+# --------------------------------------------------------------------------- #
+
+
+def _pick_time_signature(meter_candidates: list, *,
+                         four_bias: float = 2.5) -> int:
+    """Choose a time signature from the analyzer's meter_candidates.
+
+    The analyzer reports `[(beats_per_bar, score), ...]` — periodicity
+    matches, where higher score means the audio's onset pattern repeats
+    at that interval. For nearly all popular music the answer is 4, but
+    compound multiples (6, 8, 12) often score competitively.
+
+    Bias toward 4: only choose another candidate if its score exceeds
+    4's score by `four_bias`× (40% by default). This avoids the common
+    failure where 12 (12/8 compound feel) wins by 0.336 vs 0.197 for 4
+    on a song that's actually in 4/4.
+    """
+    if not meter_candidates:
+        return 4
+
+    # Build a clean list of (n_beats, score)
+    pairs: list[tuple[int, float]] = []
+    for c in meter_candidates:
+        try:
+            if isinstance(c, dict):
+                n = int(c.get("beats_per_bar", 0))
+                s = float(c.get("score", 0))
+            else:
+                n = int(c[0])
+                s = float(c[1]) if len(c) >= 2 else 0.0
+            if 2 <= n <= 9:
+                pairs.append((n, s))
+        except Exception:
+            continue
+
+    if not pairs:
+        return 4
+
+    score_for = {n: s for n, s in pairs}
+    score_4 = score_for.get(4, 0.0)
+    # Find best non-4 candidate
+    best_other = max((p for p in pairs if p[0] != 4), default=(4, 0.0),
+                     key=lambda p: p[1])
+    if best_other[1] > score_4 * four_bias and score_4 > 0:
+        return best_other[0]
+    if score_4 > 0:
+        return 4
+    # No 4 listed; fall back to top candidate, otherwise 4
+    return max(pairs, key=lambda p: p[1])[0] if pairs else 4
+
+
+def _snap_to_grid(beat: float, grid_beats: float) -> float:
+    """Round a beat position to the nearest grid_beats."""
+    if grid_beats <= 0:
+        return beat
+    return round(beat / grid_beats) * grid_beats
+
+
+def _quantize_notes(notes: list[NoteEvent], grid_beats: float = 0.25,
+                    min_length_beats: float = 0.125) -> list[NoteEvent]:
+    """Snap note start positions to a grid (default 16th-note: 0.25 beats)
+    and enforce a minimum length so transcribed micro-notes (vibrato/
+    breath/onset glitches) collapse into musical durations.
+    Returns a new list; doesn't mutate input."""
+    out: list[NoteEvent] = []
+    for n in notes:
+        new_start = _snap_to_grid(n.start_beat, grid_beats)
+        new_len = max(min_length_beats, n.length_beats)
+        # Round length to grid as well, so notes don't end at random places
+        new_len = max(min_length_beats, _snap_to_grid(new_len, grid_beats))
+        out.append(NoteEvent(
+            start_beat=new_start, length_beats=new_len,
+            pitch=n.pitch, velocity=n.velocity, channel=n.channel,
+        ))
+    return out
+
+
+def _dedupe_overlapping(notes: list[NoteEvent], min_gap_beats: float = 0.06
+                        ) -> list[NoteEvent]:
+    """Remove duplicate-pitch notes that start within min_gap_beats of
+    each other. Quantization snaps multiple BasicPitch micro-notes to
+    the same grid position, producing machine-gun retrigger; collapse
+    those into a single longer note."""
+    by_pitch: dict[int, list[NoteEvent]] = {}
+    for n in notes:
+        by_pitch.setdefault(n.pitch, []).append(n)
+
+    out: list[NoteEvent] = []
+    for pitch, events in by_pitch.items():
+        events.sort(key=lambda x: x.start_beat)
+        kept: list[NoteEvent] = []
+        for ev in events:
+            if kept and ev.start_beat - kept[-1].start_beat < min_gap_beats:
+                # Extend previous to cover this one
+                end_a = kept[-1].start_beat + kept[-1].length_beats
+                end_b = ev.start_beat + ev.length_beats
+                kept[-1] = NoteEvent(
+                    start_beat=kept[-1].start_beat,
+                    length_beats=max(end_a, end_b) - kept[-1].start_beat,
+                    pitch=pitch,
+                    velocity=max(kept[-1].velocity, ev.velocity),
+                    channel=ev.channel,
+                )
+            else:
+                kept.append(ev)
+        out.extend(kept)
+    out.sort(key=lambda n: n.start_beat)
+    return out
+
+
 def spec_from_analyzer_json(
     data: dict[str, Any],
     *,
@@ -398,19 +510,15 @@ def spec_from_analyzer_json(
         warnings.append(f"invalid bpm in analysis: {bpm}; defaulting to 120")
         bpm = 120.0
 
-    # Time-sig from meter_candidates if present
-    meter_candidates = rhythm.get("meter_candidates") or []
-    time_sig_num = 4
-    if meter_candidates:
-        try:
-            top = meter_candidates[0]
-            if isinstance(top, (list, tuple)) and len(top) >= 1:
-                time_sig_num = int(top[0])
-            elif isinstance(top, dict):
-                time_sig_num = int(top.get("beats_per_bar", 4))
-        except Exception as e:
-            warnings.append(f"could not parse meter_candidates: {e}")
-    if time_sig_num not in (2, 3, 4, 5, 6, 7, 9, 12):
+    # Time-sig from meter_candidates. The analyzer's `meter_candidates`
+    # is a list of [beats_per_bar, score] periodicity matches — the top
+    # entry is just whatever periodicity hits hardest, NOT necessarily
+    # the song's actual time signature. Compound metres (12, 6) and 4
+    # often score similarly for a song that's actually in 4/4, because
+    # any 4-beat pattern repeats at the 12-beat level too. Default to
+    # 4 unless something clearly better dominates.
+    time_sig_num = _pick_time_signature(rhythm.get("meter_candidates") or [])
+    if time_sig_num not in (2, 3, 4, 5, 6, 7, 9):
         warnings.append(f"unusual time_sig_num {time_sig_num}; clamping to 4")
         time_sig_num = 4
 
@@ -433,8 +541,12 @@ def spec_from_analyzer_json(
                 genre, bpm, key_root_pc, key_mode)
 
     # ---- sections ----
+    # Snap section boundaries to bar lines so drums (which loop on the
+    # bar) don't start mid-bar against transcribed notes (which we'll
+    # also snap to a tighter grid below).
+    bar_beats = float(time_sig_num)
     structure = data.get("structure", []) or []
-    sections: list[SectionSpec] = []
+    raw_sections: list[SectionSpec] = []
     for s in structure:
         try:
             start_s = float(s.get("start", 0))
@@ -442,13 +554,14 @@ def spec_from_analyzer_json(
             if end_s <= start_s:
                 continue
             sec_type = _map_section_type(str(s.get("type", "")))
-            length_b = _seconds_to_beats(end_s - start_s, bpm)
-            start_b = _seconds_to_beats(start_s, bpm)
+            start_b = _snap_to_grid(_seconds_to_beats(start_s, bpm), bar_beats)
+            end_b = _snap_to_grid(_seconds_to_beats(end_s, bpm), bar_beats)
+            length_b = max(bar_beats, end_b - start_b)  # at least 1 bar
             energy = float(s.get("energy_ratio", 0.5) or 0.5)
             density = max(0.0, min(1.0, energy / 1.5))  # energy_ratio>1.5 → 1.0
             density_hint = float(s.get("onset_density", 0) or 0) / 12.0
             density = max(density, min(1.0, density_hint))
-            sections.append(SectionSpec(
+            raw_sections.append(SectionSpec(
                 type=sec_type,  # type: ignore[arg-type]
                 start_beat=start_b,
                 length_beats=length_b,
@@ -458,6 +571,23 @@ def spec_from_analyzer_json(
             ))
         except Exception as e:
             warnings.append(f"failed to parse section {s!r}: {e}")
+
+    # Resolve overlaps caused by snapping (section A's end snapped past
+    # section B's start). Walk in order, clamp each to start strictly
+    # after the previous one's end.
+    raw_sections.sort(key=lambda s: s.start_beat)
+    sections: list[SectionSpec] = []
+    next_start = 0.0
+    for s in raw_sections:
+        if s.start_beat < next_start:
+            # Push start forward; preserve length if possible
+            s = SectionSpec(
+                type=s.type, start_beat=next_start, length_beats=s.length_beats,
+                density=s.density, brightness=s.brightness,
+                instrumentation=list(s.instrumentation), label=s.label,
+            )
+        sections.append(s)
+        next_start = s.start_beat + s.length_beats
 
     # Apply global brightness as section default if we don't have per-section data
     timbre = data.get("timbre", {}) or {}
@@ -473,12 +603,17 @@ def spec_from_analyzer_json(
         sections = [SectionSpec(type="verse", start_beat=0, length_beats=max(16.0, dur_b))]
 
     # ---- chord track ----
+    # Snap chord changes to the nearest beat. In nearly all popular music
+    # chords change on strong beats (especially beat 1); the analyzer's
+    # detected boundaries are off-grid by tens to hundreds of milli-
+    # seconds. Letting that through means the bass line follows fractional-
+    # beat chord changes and never lands on the downbeat.
     chord_track: list[ChordEvent] = []
     chords = harmony.get("chords") or []
     for c in chords[: opt.max_chord_events]:
         try:
-            start_b = _seconds_to_beats(float(c["start"]), bpm)
-            end_b = _seconds_to_beats(float(c["end"]), bpm)
+            start_b = _snap_to_grid(_seconds_to_beats(float(c["start"]), bpm), 1.0)
+            end_b = _snap_to_grid(_seconds_to_beats(float(c["end"]), bpm), 1.0)
             if end_b <= start_b:
                 continue
             root_pc, qual = parse_chord_name(str(c.get("chord", "C")))

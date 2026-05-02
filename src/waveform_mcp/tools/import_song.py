@@ -255,12 +255,23 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                     str(audio_path), bpm=spec.tempo_bpm,
                 )
                 if tr.ok and tr.notes:
+                    # Quantize raw transcription to a 16th-note grid and
+                    # collapse overlapping micro-notes. Without this the
+                    # transcribed notes drift between Waveform's strict
+                    # bar-aligned drum loop and never feel "in time" with
+                    # everything else.
+                    from ..reference_adapter import _quantize_notes, _dedupe_overlapping
+                    quantized = _quantize_notes(tr.notes, grid_beats=0.25,
+                                                 min_length_beats=0.125)
+                    quantized = _dedupe_overlapping(quantized, min_gap_beats=0.06)
                     counts = poly_transcribe.populate_spec_tracks_from_transcription(
-                        spec.tracks, tr.notes, overwrite=True,
+                        spec.tracks, quantized, overwrite=True,
                     )
                     transcription_info = {
-                        "used": True, "note_count": len(tr.notes),
+                        "used": True, "note_count_raw": len(tr.notes),
+                        "note_count_quantized": len(quantized),
                         "per_role": counts,
+                        "grid": "16th",
                     }
                     spec.provenance["basic_pitch"] = transcription_info
                 else:

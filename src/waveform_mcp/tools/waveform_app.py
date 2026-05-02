@@ -142,18 +142,19 @@ def waveform_status(args: dict) -> dict:
 def waveform_launch(args: dict) -> dict:
     """Open `file_path` in Waveform, launching the app if needed.
 
-    Behavior:
-      * If Waveform isn't running and `file_path` is provided, spawn
-        Waveform.exe with the file as a CLI argument — Waveform loads
-        it on startup.
-      * If Waveform is already running, the spawn-with-CLI-arg approach
-        is unreliable (the second instance is eaten or doesn't forward
-        the file). In that case we drive Waveform's UI to open the file
-        via Ctrl+O + clipboard-paste of the path + Enter.
+    State-aware decision tree (no `file_path` falls through to plain
+    cold-start of the app, no file load):
 
-    Returns ok=True once the file is loaded (or once the launch is
-    initiated for cold-start), with `mode` indicating which path was
-    taken: "spawned" or "opened_in_running".
+      1. Waveform NOT running              → Popen with file as CLI arg
+      2. Waveform running, file ALREADY    → focus the existing tab
+         the active or visible tab           (no-op drop; mode="already_open")
+      3. Waveform running, but a modal     → bail with informative error
+         dialog (Open/Save/etc.) is open     so the caller can decide
+      4. Waveform running, no conflict     → drag the file in via
+                                             Explorer → OLE drop
+
+    Always returns ok=True with `mode` describing what happened, OR
+    ok=False with a specific `stage` field naming the failure point.
     """
     file_path = args.get("file_path")
     exe_path = args.get("exe_path") or _locate()
@@ -164,29 +165,235 @@ def waveform_launch(args: dict) -> dict:
         if not Path(file_path).exists():
             return {"ok": False, "error": f"file not found: {file_path}"}
 
-    # Branch: is Waveform already running?
     pid, _ = _find_running()
-    if pid is not None and file_path:
-        return _open_in_running(str(file_path))
 
-    # Cold start: spawn with file as CLI arg
-    cmd = [exe_path]
-    if file_path:
-        cmd.append(str(file_path))
+    # Case 1: Waveform isn't running — cold start
+    if pid is None:
+        cmd = [exe_path]
+        if file_path:
+            cmd.append(str(file_path))
+        try:
+            if sys.platform == "win32":
+                DETACHED = 0x00000008
+                subprocess.Popen(
+                    cmd,
+                    creationflags=DETACHED | subprocess.CREATE_NEW_PROCESS_GROUP,
+                    close_fds=True,
+                )
+            else:
+                subprocess.Popen(cmd, start_new_session=True, close_fds=True)
+        except Exception as e:
+            return {"ok": False, "error": str(e), "type": type(e).__name__,
+                    "stage": "spawn"}
+        return {"ok": True, "exe_path": exe_path, "file_path": file_path,
+                "mode": "spawned"}
+
+    # If no file given, nothing more to do — Waveform's already running
+    if not file_path:
+        return {"ok": True, "mode": "already_running", "pid": pid}
+
+    # Case 2-4 require checking Waveform's UI state
+    state = _waveform_ui_state(file_path)
+    if state.get("error"):
+        return {"ok": False, "error": state["error"],
+                "stage": "state_check"}
+
+    # Case 3: a modal/file dialog is up — refuse to drop into the dialog
+    if state.get("modal_dialog"):
+        return {
+            "ok": False,
+            "error": (f"Waveform has a modal dialog open "
+                      f"({state['modal_dialog']}). Close it before opening a file."),
+            "stage": "modal_dialog_blocking",
+            "dialog_title": state["modal_dialog"],
+        }
+
+    # Case 2: file is already loaded — focus its tab and revert from
+    # disk (we may have just rewritten the file underneath it). Revert
+    # is cheap and idempotent: if the on-disk file matches what's in
+    # memory it's a no-op.
+    if state.get("file_already_loaded"):
+        existing_tab = state["file_already_loaded"]
+        focus_res = _focus_tab(existing_tab)
+        revert_ok = False
+        revert_err: str | None = None
+        try:
+            from .waveform_workflows import waveform_revert_to_saved
+            r = waveform_revert_to_saved({})
+            revert_ok = bool(r.get("ok"))
+            if not revert_ok:
+                revert_err = r.get("error")
+        except Exception as e:
+            revert_err = str(e)
+        return {
+            "ok": True, "file_path": file_path,
+            "mode": "already_open_reverted" if revert_ok else "already_open",
+            "active_tab": existing_tab,
+            "focused": focus_res.get("ok", False),
+            "reverted": revert_ok,
+            **({"revert_error": revert_err} if revert_err else {}),
+        }
+
+    # Case 4: drag-drop — but only if we're on an edit view. JUCE only
+    # honors OLE drops on the timeline; Welcome/Projects/Settings tabs
+    # silently swallow drops with no effect, leading to mysterious
+    # "succeeded but nothing happened" outcomes.
+    active_view = state.get("active_view") or "unknown"
+    if active_view != "edit":
+        return {
+            "ok": False,
+            "stage": "wrong_view",
+            "active_view": active_view,
+            "error": (f"Waveform is on the '{active_view}' view; drag-drop "
+                      f"only works from the timeline (edit) view. Open any "
+                      f"existing edit tab first, or close Waveform and "
+                      f"call again to cold-start."),
+            "tab_titles": state.get("tab_titles", []),
+        }
+
+    return _open_in_running(str(file_path))
+
+
+def _waveform_ui_state(file_path: str) -> dict:
+    """Inspect Waveform's current UI state to decide how to load `file_path`.
+
+    Returns a dict with optional fields:
+      * `modal_dialog` — title of any blocking dialog (Open/Save/preset/etc.)
+      * `file_already_loaded` — tab name if the target file is already open
+      * `tab_titles` — current edit tab list (for diagnostics)
+      * `active_view` — one of "edit", "welcome", "projects", "settings",
+        or None if undetermined. Drag-drop only succeeds in "edit" view.
+      * `error` — populated if state inspection itself failed
+
+    Always best-effort and non-destructive — never sends keys, never
+    clicks, never moves the mouse.
+    """
+    out: dict = {}
+    if sys.platform != "win32":
+        out["error"] = "state inspection only supported on Windows"
+        return out
+
     try:
-        if sys.platform == "win32":
-            DETACHED = 0x00000008
-            subprocess.Popen(
-                cmd,
-                creationflags=DETACHED | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-            )
-        else:
-            subprocess.Popen(cmd, start_new_session=True, close_fds=True)
+        import pygetwindow as gw  # type: ignore[import-untyped]
+    except ImportError:
+        out["error"] = "pygetwindow not installed"
+        return out
+
+    # Detect modal/file dialogs owned by Waveform's process
+    try:
+        wf_pid, _ = _find_running()
+    except Exception:
+        wf_pid = None
+
+    dialog_title: str | None = None
+    # Patterns for known Waveform-owned modals: standard Open/Save dialogs,
+    # plus Waveform-specific names ("Select a project or archive file...",
+    # "Save edit as", etc.)
+    modal_keywords = (
+        "select a project", "save edit", "save as",
+        "open project", "import",
+        "are you sure", "confirm", "warning",
+        "preset", "browser",
+        "render", "export",
+    )
+    try:
+        for w in gw.getAllWindows():
+            title = (w.title or "").strip()
+            if not title or title.lower() == "waveform free" or title == "Waveform":
+                continue
+            tl = title.lower()
+            if any(k in tl for k in modal_keywords):
+                # Confirm it's actually a modal that's blocking input
+                # (visible + not minimized)
+                try:
+                    if w.visible and not w.isMinimized:
+                        dialog_title = title
+                        break
+                except Exception:
+                    dialog_title = title
+                    break
+    except Exception:
+        # Don't fail the whole state check if window enumeration breaks
+        pass
+    if dialog_title:
+        out["modal_dialog"] = dialog_title
+
+    # Inspect tab strip
+    try:
+        tabs = _list_tab_titles()
+        out["tab_titles"] = tabs
     except Exception as e:
-        return {"ok": False, "error": str(e), "type": type(e).__name__}
-    return {"ok": True, "exe_path": exe_path, "file_path": file_path,
-            "mode": "spawned"}
+        out["tab_titles"] = []
+        # Non-fatal: continue with empty tab list
+
+    # Is the file already loaded? Match by basename / stem against tab labels.
+    target_stem = Path(file_path).stem
+    target_name = Path(file_path).name
+    for t in out.get("tab_titles", []):
+        if not t:
+            continue
+        if t == target_stem or t == target_name or target_stem in t:
+            out["file_already_loaded"] = t
+            break
+
+    # Active view detection — distinguishes whether Waveform is currently
+    # showing an edit timeline (where drag-drop works) versus the
+    # Welcome/Projects/Settings nav tabs (where drops are silently
+    # ignored). Heuristic: the edit view always shows the transport's
+    # 'Play' button. Welcome/Projects/Settings don't.
+    out["active_view"] = _detect_active_view()
+
+    return out
+
+
+def _detect_active_view() -> str:
+    """Return one of 'edit', 'welcome', 'projects', 'settings', or 'unknown'.
+
+    Edit view always shows the transport bar (Play/Record/Loop). The nav
+    tabs don't have a transport. So presence of a 'Play' Button is a
+    reliable proxy for 'an edit is currently visible'.
+    """
+    try:
+        from .win_input import _uia_app, _uia_window, _walk_uia
+        app, _ = _uia_app()
+        if app is None:
+            return "unknown"
+        win = _uia_window(app)
+        rows = _walk_uia(win, want_types=("Button",), max_results=300)
+        names = {(r.get("name") or "").strip() for r in rows}
+        if "Play" in names and "Record" in names:
+            return "edit"
+        # Else figure out which nav tab is active by looking at distinctive
+        # buttons that only appear on each
+        if "New Project..." in names or "Open Project..." in names:
+            return "projects"
+        if "Audio Settings" in names or "Browse all Projects" in names:
+            return "welcome"
+        if "Audio device type" in names or "Buffer size" in names:
+            return "settings"
+        return "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _focus_tab(tab_name: str) -> dict:
+    """Click a tab button by name to bring it to the foreground.
+    Best-effort: returns ok=False on failure but never raises."""
+    if sys.platform != "win32":
+        return {"ok": False, "error": "windows only"}
+    try:
+        from . import win_input
+    except ImportError as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        from .waveform_workflows import _restore_if_minimized
+        _restore_if_minimized()
+    except Exception:
+        pass
+    res = win_input.win_uia_invoke({
+        "name": tab_name, "control_type": "Button", "delay_after": 0.3,
+    })
+    return res
 
 
 def _open_in_running(file_path: str) -> dict:

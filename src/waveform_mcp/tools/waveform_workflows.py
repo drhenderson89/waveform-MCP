@@ -408,51 +408,30 @@ def waveform_revert_to_saved(args: dict) -> dict:
 def _project_is_loaded() -> bool:
     """True if the active Waveform window has at least one project edit tab.
 
-    Lighter-weight than waveform_active_tab; used as a precondition gate.
+    Delegates to waveform_app._list_tab_titles which already understands
+    both naming conventions:
+      * '<Project> Edit N' — standard project edits
+      * '<basename>'        — drag-dropped/imported edits (no Edit N suffix)
 
-    Heuristics (any-of):
-      1. Window title contains a project name (form "<Project> - Waveform"
-         or window text contains " Edit ").
-      2. Any UIA control's name matches "<something> Edit <N>" (the standard
-         Waveform tab label for an open edit, e.g. "MCP-Validate Edit 1").
-         This is the most reliable signal — the title bar of Waveform FREE
-         remains "Waveform FREE" even when a project is open, but the tab
-         strip always shows "<Project> Edit N" for each loaded edit.
-      3. Fallback: a Button whose name is exactly "Edit" sits in the toolbar
-         when an edit is active (mode switcher).
+    Falls back to a window-title check for the rarer case where a project
+    is loaded but the tab strip is occluded.
     """
     try:
-        from .win_input import _uia_app, _uia_window, _walk_uia  # type: ignore[attr-defined]
-        import re as _re
+        from .waveform_app import _list_tab_titles
+        if _list_tab_titles():
+            return True
+    except Exception:
+        pass
 
-        app, _err = _uia_app()
+    # Title fallback (Pro edition shows '<project> - Waveform')
+    try:
+        from .win_input import _uia_app, _uia_window
+        app, _ = _uia_app()
         if app is None:
             return False
         win = _uia_window(app)
         title = win.window_text() or ""
-        # Common project-loaded title formats
-        if " - " in title and "Waveform" in title:
-            return True
-
-        # Walk all controls once and look for tab-strip / toolbar signals
-        rows = _walk_uia(win, want_types=None, max_results=400)
-        edit_tab_re = _re.compile(r".+\s+Edit\s+\d+$")
-        nav_names = {"Welcome", "Projects", "Settings", "Edit"}
-        for r in rows:
-            name = (r.get("name") or "").strip()
-            if not name:
-                continue
-            # Signal 2: project-edit tab labels
-            if edit_tab_re.match(name):
-                return True
-            # Signal 3: toolbar mode-switcher "Edit" button (only present
-            # when an edit is loaded). Distinguish from tabs/menus by
-            # control type when possible.
-            if name == "Edit" and r.get("control_type") in ("Button", "TabItem"):
-                # The Welcome screen has no such control.
-                return True
-
-        return False
+        return " - " in title and "Waveform" in title
     except Exception:
         return False
 
