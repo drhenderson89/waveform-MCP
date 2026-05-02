@@ -291,9 +291,16 @@ def _build_track(tspec: TrackSpec, spec: CompositionSpec, total_beats: float,
         _lay_drum_pattern(tid, tspec.drum_pattern, spec.sections, total_beats, warnings)
     elif tspec.notes:
         _lay_notes(tid, tspec.notes, total_beats, warnings)
-    elif tspec.role in ("pad", "keys") and spec.chord_track:
-        # Auto-fill pad/keys with chord-track sustain
-        _lay_chord_sustain(tid, spec.chord_track, octave=4, warnings=warnings)
+    elif tspec.role == "pad" and spec.chord_track:
+        # Pads sustain chord tones across the full chord duration
+        _lay_chord_sustain(tid, spec.chord_track, octave=4,
+                           warnings=warnings, rhythm="sustain")
+    elif tspec.role == "keys" and spec.chord_track:
+        # Keys comp with a quarter-note pulse — same notes as pad but
+        # re-articulated each beat so it sits in the rhythmic pocket
+        # instead of droning. Uses a higher octave to sit above bass.
+        _lay_chord_sustain(tid, spec.chord_track, octave=5,
+                           warnings=warnings, rhythm="quarter")
     return tid
 
 
@@ -370,42 +377,76 @@ def _lay_notes(track_id: str, notes: list[NoteEvent], total_beats: float,
 
 
 def _lay_chord_sustain(track_id: str, chord_track: list[ChordEvent],
-                       *, octave: int, warnings: list[str]) -> None:
-    """Auto-fill a pad/keys track with chord-tone sustain on the chord_track."""
+                       *, octave: int, warnings: list[str],
+                       rhythm: str = "sustain") -> None:
+    """Auto-fill a track with chord tones from the chord_track.
+
+    `rhythm` controls how each chord is articulated:
+      * "sustain"  — single long note over the full chord duration
+                     (best for pads and ambience)
+      * "quarter"  — re-articulate every quarter note (basic comping;
+                     keys / piano feel)
+      * "eighth"   — re-articulate every 8th (busier comping)
+    """
     if not chord_track:
         return
     last_end = max(c.start_beat + c.length_beats for c in chord_track)
+    clip_name = {"sustain": "Chord Pad", "quarter": "Chord Comp",
+                 "eighth": "Chord Arp"}.get(rhythm, "Chords")
     try:
         clip = midi_tools.midi_clip_add({
             "track_id": track_id,
             "start_beats": 0.0,
             "length_beats": float(last_end),
-            "name": "Chord Pad",
+            "name": clip_name,
         })["clip_id"]
     except Exception as e:
-        warnings.append(f"midi_clip_add for chord sustain: {e}")
+        warnings.append(f"midi_clip_add for chord {rhythm}: {e}")
         return
 
     notes: list[dict] = []
     base = 12 * octave  # C4=60 at octave=4
+    pulse_beats = {"quarter": 1.0, "eighth": 0.5}.get(rhythm)
+
     for c in chord_track:
         # Triad: root, third, fifth
         third = 4 if c.quality in ("maj", "maj7", "7", "aug", "add9") else 3
         fifth = 7 if c.quality not in ("dim", "dim7", "m7b5") else 6
-        # Power-chord: just root + 5th
         intervals = [0, fifth] if c.quality == "5" else [0, third, fifth]
-        for semis in intervals:
-            notes.append({
-                "pitch": int(base + c.root_pc + semis),
-                "start_beats": float(c.start_beat),
-                "length_beats": float(c.length_beats),
-                "velocity": 80,
-            })
+
+        if pulse_beats is None:
+            # Single sustained note across the chord
+            for semis in intervals:
+                notes.append({
+                    "pitch": int(base + c.root_pc + semis),
+                    "start_beats": float(c.start_beat),
+                    "length_beats": float(c.length_beats),
+                    "velocity": 80,
+                })
+        else:
+            # Pulsed re-articulation — e.g. one hit per quarter note
+            t = c.start_beat
+            end = c.start_beat + c.length_beats
+            while t < end:
+                hit_len = min(pulse_beats, end - t)
+                if hit_len <= 0:
+                    break
+                for semis in intervals:
+                    notes.append({
+                        "pitch": int(base + c.root_pc + semis),
+                        "start_beats": float(t),
+                        # Slightly shorter than the pulse so successive
+                        # voicings don't blur together
+                        "length_beats": float(hit_len * 0.85),
+                        "velocity": 75,
+                    })
+                t += pulse_beats
+
     if notes:
         try:
             midi_tools.midi_notes_add({"clip_id": clip, "notes": notes})
         except Exception as e:
-            warnings.append(f"midi_notes_add for chord sustain: {e}")
+            warnings.append(f"midi_notes_add for chord {rhythm}: {e}")
 
 
 # --------------------------------------------------------------------------- #

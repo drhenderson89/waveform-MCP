@@ -256,21 +256,50 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                 )
                 if tr.ok and tr.notes:
                     # Quantize raw transcription to a 16th-note grid and
-                    # collapse overlapping micro-notes. Without this the
-                    # transcribed notes drift between Waveform's strict
-                    # bar-aligned drum loop and never feel "in time" with
-                    # everything else.
-                    from ..reference_adapter import _quantize_notes, _dedupe_overlapping
+                    # collapse overlapping micro-notes.
+                    from ..reference_adapter import (
+                        _quantize_notes, _dedupe_overlapping,
+                        _clean_dense_role,
+                        _derive_drum_pattern_from_onsets,
+                    )
+                    from ..composition_spec import DrumPatternSpec
+
                     quantized = _quantize_notes(tr.notes, grid_beats=0.25,
                                                  min_length_beats=0.125)
                     quantized = _dedupe_overlapping(quantized, min_gap_beats=0.06)
                     counts = poly_transcribe.populate_spec_tracks_from_transcription(
                         spec.tracks, quantized, overwrite=True,
                     )
+
+                    # Derive drum pattern from where the song actually
+                    # hits — bass + lead onsets — not the static backbeat
+                    # baked into the spec. Keys is now chord-tone comp
+                    # (auto-filled in builder), so we don't reference it
+                    # here.
+                    bass_notes = next((t.notes for t in spec.tracks
+                                       if t.role == "bass"), [])
+                    lead_notes = next((t.notes for t in spec.tracks
+                                       if t.role in ("lead", "melody")), [])
+                    derived_drum_notes = _derive_drum_pattern_from_onsets(
+                        bass_notes=bass_notes, lead_notes=lead_notes,
+                        keys_notes=[],
+                        bar_beats=spec.time_sig_num,
+                    )
+                    drums_track = next((t for t in spec.tracks
+                                        if t.role == "drums"), None)
+                    if drums_track and derived_drum_notes:
+                        drums_track.drum_pattern = DrumPatternSpec(
+                            notes=derived_drum_notes,
+                            loop_length_beats=float(spec.time_sig_num),
+                        )
+
                     transcription_info = {
                         "used": True, "note_count_raw": len(tr.notes),
                         "note_count_quantized": len(quantized),
+                        "drum_pattern_derived_from_onsets": True,
+                        "drum_hits": len(derived_drum_notes),
                         "per_role": counts,
+                        "keys_via_chord_comp": True,
                         "grid": "16th",
                     }
                     spec.provenance["basic_pitch"] = transcription_info

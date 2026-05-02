@@ -126,10 +126,11 @@ class TestFilterByRole:
         assert all(36 <= x.pitch <= 47 for x in n)
         assert any(x.pitch == 36 for x in n)
 
-    def test_keys_takes_middle_octaves(self):
-        n = filter_by_role(self._make_notes(), "keys")
-        assert all(48 <= x.pitch <= 71 for x in n)
-        assert any(x.pitch == 60 for x in n)
+    def test_keys_now_excluded_from_transcription(self):
+        # Keys is now chord-tone comp — transcription deliberately
+        # excludes it because BasicPitch over-transcribes harmonic
+        # content into a 1500+ note cloud.
+        assert filter_by_role(self._make_notes(), "keys") == []
 
     def test_lead_filters_to_high_pitches(self):
         n = filter_by_role(self._make_notes(), "lead")

@@ -455,6 +455,153 @@ def _quantize_notes(notes: list[NoteEvent], grid_beats: float = 0.25,
     return out
 
 
+def _clean_dense_role(notes: list[NoteEvent], *,
+                      min_velocity: int = 35,
+                      min_length_beats: float = 0.25,
+                      max_polyphony: int = 4,
+                      grid_beats: float = 0.5) -> list[NoteEvent]:
+    """Aggressive cleanup for dense roles like 'keys' where BasicPitch
+    has transcribed every harmonic peak, vibrato, and sustain artifact.
+
+    Steps:
+      1. Drop notes below velocity floor (BasicPitch maps amplitude →
+         velocity; quiet notes are usually transients/noise).
+      2. Drop notes shorter than min_length_beats (8th note default).
+      3. Re-quantize to grid_beats (8th-note for keys, vs 16th for lead).
+      4. Cap simultaneous polyphony — at any beat, keep at most
+         `max_polyphony` notes (drop lowest-velocity ties).
+
+    Returns a new list, sorted by start_beat. Does not mutate input.
+    """
+    # Filters 1+2
+    cleaned = [n for n in notes
+               if n.velocity >= min_velocity
+               and n.length_beats >= min_length_beats]
+    if not cleaned:
+        return []
+
+    # Filter 3: snap to coarser grid
+    cleaned = [
+        NoteEvent(
+            start_beat=_snap_to_grid(n.start_beat, grid_beats),
+            length_beats=max(grid_beats, _snap_to_grid(n.length_beats, grid_beats)),
+            pitch=n.pitch, velocity=n.velocity, channel=n.channel,
+        )
+        for n in cleaned
+    ]
+
+    # Filter 4: cap polyphony per onset position
+    cleaned.sort(key=lambda n: (n.start_beat, -n.velocity))
+    by_start: dict[float, list[NoteEvent]] = {}
+    for n in cleaned:
+        by_start.setdefault(n.start_beat, []).append(n)
+    out: list[NoteEvent] = []
+    for sb in sorted(by_start.keys()):
+        # Top N by velocity at this position
+        out.extend(by_start[sb][:max_polyphony])
+    return out
+
+
+def _derive_drum_pattern_from_onsets(
+    *,
+    bass_notes: list[NoteEvent],
+    lead_notes: list[NoteEvent],
+    keys_notes: list[NoteEvent],
+    bar_beats: int = 4,
+    grid_resolution: int = 16,    # 16ths per bar
+) -> list[NoteEvent]:
+    """Build a 1-bar drum loop whose hits land on positions where the
+    actual song's onsets land. Returns a list of NoteEvents on a 1-bar
+    timeline (start_beat in [0, bar_beats)).
+
+    Strategy:
+      * Histogram onsets per grid position (16th notes by default)
+      * KICK fires on positions with strong low-pitch (bass) onsets,
+        plus always on beat 1
+      * SNARE fires on backbeats (beats 2 and 4 in 4/4) — universal
+        across most popular music — plus any position with strong
+        high-pitch lead onsets that often coincide with snare hits
+      * HAT fires on every 8th note for steady time, plus any 16th
+        position with significant onset density
+    """
+    grid_beats = bar_beats / grid_resolution
+    histogram_bass = [0] * grid_resolution
+    histogram_lead = [0] * grid_resolution
+    histogram_keys = [0] * grid_resolution
+
+    for n in bass_notes:
+        idx = int(round((n.start_beat % bar_beats) / grid_beats)) % grid_resolution
+        histogram_bass[idx] += 1
+    for n in lead_notes:
+        idx = int(round((n.start_beat % bar_beats) / grid_beats)) % grid_resolution
+        histogram_lead[idx] += 1
+    for n in keys_notes:
+        idx = int(round((n.start_beat % bar_beats) / grid_beats)) % grid_resolution
+        histogram_keys[idx] += 1
+
+    notes: list[NoteEvent] = []
+
+    def beat_for(grid_idx: int) -> float:
+        return grid_idx * grid_beats
+
+    # KICK — beat 1 always, plus 1-3 extra positions that stand clearly
+    # above the mean. We use a strict criterion: position must be >=
+    # 1.4× the mean histogram value AND in the top 4 positions overall.
+    # Without this, near-uniform histograms (which BasicPitch produces
+    # from sustained content — every harmonic instability becomes a
+    # phantom onset) cause kick on every 16th = machine-gun.
+    notes.append(NoteEvent(start_beat=0.0, length_beats=0.25, pitch=36, velocity=110))
+    if any(histogram_bass):
+        mean_count = sum(histogram_bass) / len(histogram_bass)
+        # Rank positions by count, descending; skip position 0 (always-kick)
+        ranked = sorted(
+            ((i, c) for i, c in enumerate(histogram_bass) if i != 0),
+            key=lambda x: -x[1],
+        )
+        extra_kicks = 0
+        max_extra = 3
+        for i, count in ranked:
+            if extra_kicks >= max_extra:
+                break
+            # Strict: need clearly above-mean AND not right next to another
+            # kick (avoid 32nd-note clusters)
+            if count < mean_count * 1.4:
+                continue
+            # Don't place on position adjacent to existing kick (within 1
+            # 16th step) — keeps the pattern breathable
+            existing_kick_positions = [
+                int(round(n.start_beat / grid_beats))
+                for n in notes if n.pitch == 36
+            ]
+            if any(abs(i - p) < 2 for p in existing_kick_positions):
+                continue
+            notes.append(NoteEvent(
+                start_beat=beat_for(i), length_beats=0.25, pitch=36,
+                velocity=int(95 + 15 * (count / max(max(histogram_bass), 1))),
+            ))
+            extra_kicks += 1
+
+    # SNARE — backbeats. For 4/4 that's beats 2 and 4 (0-indexed = 1.0
+    # and 3.0). For 3/4 that's beat 2 (0-indexed = 1.0). General rule:
+    # every other beat starting at beat 1 (0-indexed).
+    for beat_idx in range(1, bar_beats, 2):
+        notes.append(NoteEvent(
+            start_beat=float(beat_idx), length_beats=0.25,
+            pitch=38, velocity=100,
+        ))
+
+    # HAT — every 8th note.
+    for i in range(0, grid_resolution, 2):
+        # Skip if already a kick or snare hit at this position to avoid mud
+        notes.append(NoteEvent(
+            start_beat=beat_for(i), length_beats=0.125,
+            pitch=42, velocity=70 if i % 4 == 0 else 60,
+        ))
+
+    notes.sort(key=lambda n: (n.start_beat, n.pitch))
+    return notes
+
+
 def _dedupe_overlapping(notes: list[NoteEvent], min_gap_beats: float = 0.06
                         ) -> list[NoteEvent]:
     """Remove duplicate-pitch notes that start within min_gap_beats of
