@@ -120,6 +120,17 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     sections_plan = plan["sections"]
     total_bars = sum(s["bars"] for s in sections_plan)
 
+    # --- 3b. Section-aware progression variants ---
+    # Verse uses the base progression. Chorus substitutes the last chord
+    # with V7 (dominant pull). Bridge transposes up a minor 3rd
+    # (modulation). Intro/outro use simpler pedal tones. See
+    # _make_section_progressions for full mapping.
+    section_progressions = _make_section_progressions(progression_chords, rng)
+
+    def chord_at(bar: int) -> dict:
+        return _chord_for_bar(section_progressions, sections_plan, bar,
+                              progression_chords)
+
     # --- 4. Build the edit ---
     key_root_pc = _root_to_pc(key_root)
     edit_tools.edit_create({
@@ -217,34 +228,38 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "track_id": bass_id, "name": "Bass",
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
+    # Build per-bar progression for bass-locked-to-kick (chord-aware)
+    bar_chord_list = [chord_at(b) for b in range(total_bars)]
     bass_notes_locked = _bass_locked_to_kick(
         drum_notes=drum_notes,
-        progression_chords=progression_chords,
+        progression_chords=bar_chord_list,
         total_bars=total_bars,
         bar_beats=4,
         bass_octave=0,
-        velocity=100,    # synthwave bass should hit
+        velocity=100,
     )
-    # Section-aware bass enrichment: chorus sections get octave-jump
-    # accents (every other note up an octave for energy), bridge gets
-    # a chord-tone walk (+3rd or +5th on weak beats).
+    # Section-aware bass enrichment + layer-entry filter
     if bass_notes_locked:
         enriched = []
         for n in bass_notes_locked:
-            sec = _section_at_bar(sections_plan, int(n["start_beats"] // 4))
-            if not sec:
+            bar = int(n["start_beats"] // 4)
+            sec = _section_at_bar(sections_plan, bar)
+            pos = _bar_position_in_section(sections_plan, bar)
+            if not sec or not pos:
                 enriched.append(n)
                 continue
             role = sec["role"]
+            bar_off, sec_n = pos
+            # Layer-entry: bass enters mid-intro, drops mid-outro
+            if not _track_active_at_bar("bass", role, bar_off, sec_n):
+                continue
             if role.startswith("chorus"):
-                # Alternate root and root+12
                 beat_in_bar = n["start_beats"] % 4
-                if beat_in_bar > 1.99:    # back half of bar gets the octave jump
+                if beat_in_bar > 1.99:
                     n = dict(n)
                     n["pitch"] = int(n["pitch"]) + 12
                     n["velocity"] = min(127, int(n["velocity"]) + 5)
             elif role == "bridge":
-                # Walk to the chord 5th on beat 3
                 beat_in_bar = n["start_beats"] % 4
                 if 2.4 < beat_in_bar < 3.1:
                     n = dict(n)
@@ -261,7 +276,11 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     })["clip_id"]
     pad_notes = []
     for bar in range(total_bars):
-        chord = progression_chords[bar % len(progression_chords)]
+        sec = _section_at_bar(sections_plan, bar)
+        pos = _bar_position_in_section(sections_plan, bar)
+        if sec and pos and not _track_active_at_bar("pad", sec["role"], pos[0], pos[1]):
+            continue
+        chord = chord_at(bar)
         for p in chord["voicing"]:
             pad_notes.append({
                 "pitch": int(p),
@@ -315,9 +334,10 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     }
     for bar in range(total_bars):
         sec = _section_at_bar(sections_plan, bar)
-        if sec and sec["role"] in ("intro", "outro"):
+        pos = _bar_position_in_section(sections_plan, bar)
+        if sec and pos and not _track_active_at_bar("arp", sec["role"], pos[0], pos[1]):
             continue
-        chord = progression_chords[bar % len(progression_chords)]
+        chord = chord_at(bar)
         section_role = sec["role"] if sec else "verse"
         rate = section_rate.get(section_role, "eighth")
         # Phrase index = bar // 2, picks a direction from the pool.
@@ -352,20 +372,44 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
     # Chord-aware lead — pulls notes from the current chord's tones so
-    # borrowed/non-diatonic chords don't clash with a key-bound scale.
-    # Centered in octave 5 (MIDI 72-84) which is the standard synthwave
-    # lead register. Previous implementation called melody_generate with
-    # the song's key only, ignoring chord changes, which produced
-    # out-of-tune notes against borrowed chords.
+    # borrowed/non-diatonic chords don't clash. Uses chord_lookup so the
+    # section-aware progressions (chorus V7 substitution, bridge
+    # transposition) drive the lead too.
+    #
+    # In VERSES, lead plays only on EVEN-indexed 4-bar phrases (bars
+    # 1-4, 9-12) so the Counter can answer on the odd phrases. In
+    # chorus / bridge, lead plays the full section.
     lead_notes_all = _chord_aware_lead(
         progression_chords=progression_chords,
         sections_plan=sections_plan,
         total_bars=total_bars,
-        base_octave_midi=72,    # C5 — sits above pad/keys, below scream
+        base_octave_midi=72,
         seed=seed * 59 + 1,
+        chord_lookup=chord_at,
+        # Verses get phrase_filter; choruses/bridge ignore it
     )
-    if lead_notes_all:
-        midi_tools.midi_notes_add({"clip_id": lead_clip, "notes": lead_notes_all})
+    # Apply the phrase filter only to verse-sectioned notes
+    lead_notes_filtered = []
+    for n in lead_notes_all:
+        bar = int(n["start_beats"] // 4)
+        sec = _section_at_bar(sections_plan, bar)
+        pos = _bar_position_in_section(sections_plan, bar)
+        if sec and pos and sec["role"] == "verse":
+            phrase_idx = pos[0] // 4
+            if phrase_idx % 2 == 1:
+                continue   # leave odd phrases for the counter
+        # Layer-entry: lead silent in intro/outro/buildup/breakdown
+        if sec and pos and not _track_active_at_bar(
+                "lead", sec["role"], pos[0], pos[1]):
+            # _track_active_at_bar returns True for verse/chorus/bridge by
+            # default; the explicit no-go cases (intro/outro/buildup/
+            # breakdown) are already handled in _chord_aware_lead's
+            # sec_role_filter. So this is a defensive guard.
+            continue
+        lead_notes_filtered.append(n)
+    if lead_notes_filtered:
+        midi_tools.midi_notes_add({"clip_id": lead_clip,
+                                    "notes": lead_notes_filtered})
 
     # --- 9b. Sub Bass — sustained octave-low chord roots (60% chance) ---
     sub_id = None
@@ -379,15 +423,15 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         sub_notes = []
         for bar in range(total_bars):
             sec = _section_at_bar(sections_plan, bar)
-            # Sub mutes during intro/outro to leave space for entry
-            if sec and sec["role"] in ("intro", "outro"):
+            pos = _bar_position_in_section(sections_plan, bar)
+            if sec and pos and not _track_active_at_bar(
+                    "sub_bass", sec["role"], pos[0], pos[1]):
                 continue
-            chord = progression_chords[bar % len(progression_chords)]
-            # Octave below the main bass root for real low end
+            chord = chord_at(bar)
             sub_notes.append({
                 "pitch": int(chord["bass_root"]) - 12,
                 "start_beats": float(bar * 4),
-                "length_beats": 4.05,    # sustain across the bar
+                "length_beats": 4.05,
                 "velocity": 85,
             })
         if sub_notes:
@@ -431,21 +475,24 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
             "track_id": counter_id, "name": "Counter",
             "start_beats": 0.0, "length_beats": total_bars * 4,
         })["clip_id"]
-        # Chord-aware counter: same approach as the lead but in a lower
-        # register (octave 4 = MIDI 60, below the C5 lead). Plays only
-        # during verses (skips chorus/bridge/intro/outro/buildup/breakdown)
-        # so it fills space the lead leaves.
+        # Counter: chord-aware, lower register, ANSWERS the lead.
+        # Lead plays even-indexed verse phrases (bars 1-4, 9-12) so
+        # counter plays the odd phrases (5-8, 13-16). Result is a
+        # call-and-response: lead states a phrase, counter answers,
+        # lead returns, counter answers, etc.
         counter_notes_all = _chord_aware_lead(
             progression_chords=progression_chords,
             sections_plan=sections_plan,
             total_bars=total_bars,
-            base_octave_midi=60,   # C4 — under the C5 lead
+            base_octave_midi=60,
             seed=seed * 67 + 7,
             sec_role_filter=("intro", "outro", "buildup", "breakdown",
                              "chorus", "chorus_a", "chorus_b", "bridge"),
-            rest_chance=0.55,    # counter is sparse
+            rest_chance=0.45,   # less rest than before since we already
+                                # constrain by phrase
+            phrase_filter="odd",  # answer phrases — opposite of lead
+            chord_lookup=chord_at,
         )
-        # Counter is supposed to be quieter than the lead
         for n in counter_notes_all:
             n["velocity"] = max(40, int(n["velocity"]) - 20)
         if counter_notes_all:
@@ -464,18 +511,19 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         pad_b_notes = []
         for bar in range(total_bars):
             sec = _section_at_bar(sections_plan, bar)
-            if sec and sec["role"] in ("intro", "outro"):
+            pos = _bar_position_in_section(sections_plan, bar)
+            if sec and pos and not _track_active_at_bar(
+                    "pad_b", sec["role"], pos[0], pos[1]):
                 continue
-            chord = progression_chords[bar % len(progression_chords)]
-            # Pad B sits an octave above main pad with just root + 5th for openness
+            chord = chord_at(bar)
             pad_b_notes.append({
-                "pitch": int(chord["bass_root"]) + 24,   # 2 octaves up
+                "pitch": int(chord["bass_root"]) + 24,
                 "start_beats": float(bar * 4),
                 "length_beats": 4.05,
                 "velocity": 50,
             })
             pad_b_notes.append({
-                "pitch": int(chord["bass_root"]) + 24 + 7,  # +5th
+                "pitch": int(chord["bass_root"]) + 24 + 7,
                 "start_beats": float(bar * 4),
                 "length_beats": 4.05,
                 "velocity": 45,
@@ -562,6 +610,166 @@ def _section_at_bar(sections_plan: list[dict], bar: int) -> dict | None:
     return None
 
 
+def _bar_position_in_section(sections_plan: list[dict], bar: int) -> tuple[int, int] | None:
+    """Return (bar_offset_within_section, section_total_bars) or None
+    if bar isn't inside any section."""
+    cursor = 0
+    for sec in sections_plan:
+        n = sec["bars"]
+        if cursor <= bar < cursor + n:
+            return (bar - cursor, n)
+        cursor += n
+    return None
+
+
+def _make_section_progressions(
+    base_progression: list[dict],
+    rng: random.Random,
+) -> dict[str, list[dict]]:
+    """Build per-section-role progression variants from a single base
+    4-chord progression.
+
+    Returns a dict keyed by section role:
+      "verse"   → base progression as-is
+      "chorus"  → substitute the LAST chord with the V dominant of the
+                  first chord (creates pull back to top), and bump the
+                  pad up an octave for energy
+      "bridge"  → transpose every chord up a minor 3rd (modulation
+                  away from key center) — that's the classic synthwave
+                  bridge move
+      "intro"   → pedal tone: just the tonic chord on every bar
+      "outro"   → same as verse but with the LAST chord swapped to a
+                  resolved tonic
+      "buildup" → chord 4 sustained throughout (creates anticipation)
+      "breakdown" → chord 1 sustained throughout (creates relief)
+
+    All variant voicings preserve the seventh_interval of the source
+    chord so the chord-aware lead helper still gets correct chord-tone
+    sets.
+    """
+    out: dict[str, list[dict]] = {"verse": list(base_progression)}
+
+    # Chorus: replace last chord with V of first chord (dominant pull)
+    first_root = base_progression[0]["bass_root"]
+    v_root = first_root + 7  # perfect 5th up = V
+    chorus = list(base_progression[:-1])
+    chorus.append({
+        "bass_root": v_root,
+        # Voicing: dom7 chord (V7) — 3rd, 5th, 7th up an octave
+        "voicing": [v_root + 4 + 12, v_root + 7 + 12, v_root + 10 + 12],
+        "seventh_interval": 10,    # dominant 7
+    })
+    out["chorus"] = chorus
+    out["chorus_a"] = chorus
+    out["chorus_b"] = chorus
+
+    # Bridge: transpose up a minor 3rd (3 semitones) — modulation
+    bridge = []
+    for c in base_progression:
+        bridge.append({
+            "bass_root": int(c["bass_root"]) + 3,
+            "voicing": [int(p) + 3 for p in c["voicing"]],
+            "seventh_interval": int(c.get("seventh_interval", 11)),
+        })
+    out["bridge"] = bridge
+
+    # Intro: pedal tonic
+    tonic = base_progression[0]
+    out["intro"] = [tonic, tonic, tonic, tonic]
+
+    # Outro: like verse but resolve to tonic on last chord
+    outro = list(base_progression[:-1])
+    outro.append(tonic)
+    out["outro"] = outro
+
+    # Buildup: sustain on V7 (or last chord) — anticipation
+    buildup_chord = chorus[-1]
+    out["buildup"] = [buildup_chord, buildup_chord, buildup_chord, buildup_chord]
+
+    # Breakdown: tonic pedal — relief
+    out["breakdown"] = [tonic, tonic, tonic, tonic]
+
+    return out
+
+
+def _chord_for_bar(
+    progressions: dict[str, list[dict]],
+    sections_plan: list[dict],
+    bar: int,
+    base_progression: list[dict],
+) -> dict:
+    """Look up the chord for `bar`, picking the per-section-role
+    progression and indexing into it by the bar's offset within the
+    section. Falls back to base_progression if section role is unknown."""
+    sec = _section_at_bar(sections_plan, bar)
+    if sec is None:
+        return base_progression[bar % len(base_progression)]
+    pos = _bar_position_in_section(sections_plan, bar)
+    if pos is None:
+        return base_progression[bar % len(base_progression)]
+    bar_off, _ = pos
+    role = sec["role"]
+    prog = progressions.get(role, base_progression)
+    return prog[bar_off % len(prog)]
+
+
+def _track_active_at_bar(
+    track_role: str, sec_role: str, bar_offset_in_section: int,
+    section_bars: int,
+) -> bool:
+    """Decide whether a track plays during `bar` based on its role and
+    the section it's in.
+
+    Implements layer-by-layer entry through the intro and drop-out
+    through the outro so the song builds dynamically instead of
+    everything starting at full.
+
+    Order of entry through INTRO (relative bar offset within intro):
+        bar 0+:           pad
+        25%+ in:          sub bass
+        50%+ in:          bass
+        66%+ in:          arp
+        last bar:         drum kick teaser (handled separately)
+        next section:     drums + lead come in
+    Order of drop-out through OUTRO (mirror):
+        first bar:        lose drums + lead
+        25%+ in:          lose arp
+        50%+ in:          lose bass + sub
+        last bar:         pad fade only
+
+    Other sections: track plays normally except when explicitly muted
+    (e.g., counter is verse-only, lead is chorus-or-bridge-only).
+    """
+    progress = (bar_offset_in_section / max(1, section_bars))    # 0..1
+    if sec_role == "intro":
+        if track_role == "pad":               return True
+        if track_role == "sub_bass":          return progress >= 0.25
+        if track_role == "bass":              return progress >= 0.50
+        if track_role == "arp":               return progress >= 0.66
+        if track_role == "drums":             return False    # drums in at verse start
+        if track_role in ("lead", "counter"): return False
+        if track_role == "pad_b":             return progress >= 0.50
+        return progress >= 0.50
+    if sec_role == "outro":
+        if track_role == "pad":               return True   # pad rides to end
+        if track_role in ("drums", "lead",
+                            "counter"):       return False   # drop on entry
+        if track_role == "arp":               return progress < 0.25
+        if track_role in ("bass", "sub_bass",
+                            "pad_b"):         return progress < 0.50
+        return progress < 0.50
+    if sec_role == "buildup":
+        # Buildup keeps everything except lead (lead enters in chorus)
+        if track_role in ("lead", "counter"): return False
+        return True
+    if sec_role == "breakdown":
+        # Breakdown drops drums + arp; pad + bass + lead carry
+        if track_role in ("drums", "arp"):    return False
+        return True
+    # Verse / chorus / bridge — handled by track-specific logic below
+    return True
+
+
 def _chord_aware_lead(
     *,
     progression_chords: list[dict],
@@ -571,6 +779,8 @@ def _chord_aware_lead(
     seed: int,
     sec_role_filter: tuple[str, ...] = ("intro", "outro", "buildup", "breakdown"),
     rest_chance: float = 0.35,
+    phrase_filter: str | None = None,
+    chord_lookup: "callable[[int], dict] | None" = None,
 ) -> list[dict]:
     """Generate a lead melody whose notes follow the underlying chord
     instead of the key. For each bar, pick notes from the current chord's
@@ -588,13 +798,28 @@ def _chord_aware_lead(
         sec = _section_at_bar(sections_plan, bar)
         if sec and sec["role"] in sec_role_filter:
             continue
+        # Phrase filter for call-and-response. phrase_filter="even"
+        # plays only on 4-bar phrases 0, 2, 4, ... within a section
+        # (lead bars 1-4, rest 5-8, lead 9-12, ...). "odd" inverts.
+        if phrase_filter is not None:
+            pos = _bar_position_in_section(sections_plan, bar)
+            if pos:
+                bar_off, _ = pos
+                phrase_idx = bar_off // 4
+                if phrase_filter == "even" and phrase_idx % 2 == 1:
+                    continue
+                if phrase_filter == "odd" and phrase_idx % 2 == 0:
+                    continue
         # Section types that get DENSER lead vs sparser
         is_chorus = bool(sec and sec["role"].startswith("chorus"))
-        # Per-bar rest probability — choruses get more lead, verses sparser
         if rng.random() < (rest_chance if is_chorus else rest_chance * 1.4):
             continue
 
-        chord = progression_chords[bar % len(progression_chords)]
+        # Use chord_lookup if provided (section-aware), else cycle base
+        if chord_lookup is not None:
+            chord = chord_lookup(bar)
+        else:
+            chord = progression_chords[bar % len(progression_chords)]
         # Build the available pitch pool: chord tones + neighbour notes.
         # voicing is [3rd+12, 5th+12, 7th+12]; bass_root is the chord root.
         chord_tones_pc = set()
