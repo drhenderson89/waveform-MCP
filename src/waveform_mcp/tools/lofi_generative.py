@@ -94,25 +94,27 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
             "seed": seed * 17 + 1,
             "octave": 3,
         })
-        # progression_generate returns chord_pitches (list of [root,3,5,7])
-        # and chord_roots (root MIDI notes). We synthesise voicings from
-        # the returned pitches.
+        # progression_generate returns each chord as a dict with shape
+        # {roman, degree, root_midi, chord_pitches: [MIDI notes], quality,
+        # borrowed}. chord_pitches is the actual MIDI triad/seventh
+        # voicing (3 or 4 notes); we synthesise rootless voicings from it.
         progression_chords = []
-        for chord_pitches in prog["chords"]:
-            # chord_pitches = [root, 3rd, 5th, 7th]
-            root = chord_pitches[0]
-            third, fifth, seventh = chord_pitches[1:]
-            # Rootless voicing: 3-7-9 stack starting at C5 area
-            voicing = [
-                third + 12,                            # 3rd up an octave
-                seventh + 12,                          # 7th up an octave
-                root + 14,                             # 9th = root + 14
-            ]
-            seventh_interval = seventh - root
+        for chord in prog["chords"]:
+            pitches = chord["chord_pitches"]   # [root, 3rd, 5th, (7th)]
+            root = int(chord.get("root_midi", pitches[0]))
+            # Pad to a 4-note 7th voicing if only triad came back
+            if len(pitches) >= 4:
+                third, fifth, seventh = pitches[1], pitches[2], pitches[3]
+            else:
+                third, fifth = pitches[1], pitches[2]
+                # Default 7th: maj=11, min/dim=10 from root
+                seventh = root + (11 if chord.get("quality") in ("maj", "aug") else 10)
+            # Rootless voicing: 3-7-9 stack up an octave
+            voicing = [third + 12, seventh + 12, root + 14]
             progression_chords.append({
                 "bass_root": root,
                 "voicing": voicing,
-                "seventh_interval": seventh_interval,
+                "seventh_interval": seventh - root,
             })
         progression_root_notes = [c["bass_root"] for c in progression_chords]
 
