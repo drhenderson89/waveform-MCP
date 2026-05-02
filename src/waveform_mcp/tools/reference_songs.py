@@ -19,6 +19,7 @@ from typing import Any
 # Bands: 60 / 133 / 296 / 657 / 1460 / 3243 / 7204 / 16000 Hz
 # (the default 8-band log-spaced layout audio_spectrum returns)
 REFERENCE_SPECTRA: dict[str, list[float]] = {
+    "metal":        [-22, -20, -20, -22, -22, -26, -34, -55],   # mid-forward wall, dark top, big low
     "synthwave":    [-23, -28, -26, -28, -34, -38, -42, -68],   # tight low end, controlled mids, sparkly top
     "pop":          [-24, -27, -25, -26, -29, -33, -38, -55],   # vocal mid forward
     "lofi":         [-22, -26, -27, -29, -34, -42, -50, -75],   # rolled-off top, full low

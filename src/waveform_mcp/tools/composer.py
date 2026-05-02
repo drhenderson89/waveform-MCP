@@ -2965,9 +2965,719 @@ TOOLS.append({
 })
 
 
+# ============================================================================
+# Progressive metal / djent — heavy down-tuned guitars, polyrhythmic kicks,
+# instrumental song with a guitar solo section.
+# ============================================================================
+
+# D MINOR riffs — pitches match the available power-chord samples natively.
+# Sample pitches available (MIDI): D2=38, D#2=39, F#2=42, G2=43, G#2=44, F3=53, D#3=51.
+# Both palm-muted (PMute) and sustained variants for D2, D#2, F#2, G2, G#2, D#3.
+# We use MIDI pitches as TRIGGERS that the Sampler maps to the right sample
+# (palm-muted samples mapped to the lower octave, sustained to the upper).
+# Convention used here:
+#   38..44 = palm-muted samples (D2 PMute, D#2 PMute, F#2 PMute, G2 PMute, G#2 PMute)
+#   50..53 = sustained samples (D#3, F3 — used for sustained chord stabs)
+DJENT_RIFF_NOTES = {
+    # Palm-mute chug riff in D — 3-3-2 polyrhythm with chromatic stabs
+    "riffA": [
+        # Bar 1: 16th palm-mute chugs on D with F# and G stabs
+        (0.0,  38, 0.20, 115), (0.25, 38, 0.20, 95),
+        (0.5,  38, 0.20, 105), (0.75, 42, 0.20, 110),   # F# stab (PMute)
+        (1.0,  38, 0.20, 115), (1.25, 38, 0.20, 95),
+        (1.5,  38, 0.20, 105), (1.75, 38, 0.20, 95),
+        (2.0,  38, 0.20, 115), (2.25, 43, 0.20, 105),   # G stab (PMute)
+        (2.5,  38, 0.20, 105), (2.75, 38, 0.20, 95),
+        (3.0,  38, 0.20, 115), (3.25, 42, 0.20, 110),   # F# stab
+        (3.5,  38, 0.20, 105), (3.75, 38, 0.20, 95),
+    ],
+    # Sustained power-chord stabs every 2 beats — uses sustained samples
+    "riffB": [
+        (0.0, 51, 1.85, 120),     # D#3 sustained (third interval up from D = D# in Phrygian)
+        (2.0, 53, 1.85, 120),     # F3 sustained
+    ],
+    # Breakdown: huge sustained crush + palm-mute fills
+    "breakdown": [
+        (0.0, 51, 0.45, 127),     # D#3 sustained crush
+        (0.5, 38, 0.20, 105), (0.75, 38, 0.20, 105),
+        (1.5, 38, 0.20, 105),
+        (2.0, 53, 0.45, 127),     # F3 sustained
+        (2.5, 38, 0.20, 105), (2.75, 38, 0.20, 105),
+        (3.5, 38, 0.20, 105),
+    ],
+}
+
+
+def _djent_rhythm_guitar(bars: int, sections: list[dict]) -> list[dict]:
+    """Rhythm guitar pattern that adapts to section role."""
+    notes: list[dict] = []
+    cursor = 0
+    for sec in sections:
+        sec_start_beats = cursor * 4
+        for bar_in_sec in range(sec["bars"]):
+            b = sec_start_beats + bar_in_sec * 4
+            # Pick pattern based on section
+            if sec["role"] == "intro":
+                # Sustain: hit B5 once and let it ring
+                if bar_in_sec == 0:
+                    notes.append({"pitch": 35, "start_beats": b, "length_beats": 16.0, "velocity": 100})
+                    notes.append({"pitch": 42, "start_beats": b, "length_beats": 16.0, "velocity": 80})
+                continue
+            if sec["role"] == "buildup":
+                # Tremolo-pick rising notes — 16ths on open B that crescendo
+                for i in range(16):
+                    notes.append({"pitch": 35, "start_beats": b + i * 0.25,
+                                  "length_beats": 0.20, "velocity": int(80 + i * 2.5)})
+                continue
+            if sec["role"] == "breakdown":
+                pattern = DJENT_RIFF_NOTES["breakdown"]
+            elif sec["name"] == "riffB":
+                pattern = DJENT_RIFF_NOTES["riffB"]
+            else:
+                pattern = DJENT_RIFF_NOTES["riffA"]
+            for beat, pitch, length, vel in pattern:
+                notes.append({"pitch": pitch, "start_beats": b + beat,
+                              "length_beats": length, "velocity": vel})
+        cursor += sec["bars"]
+    return notes
+
+
+def _djent_bass(bars: int, sections: list[dict]) -> list[dict]:
+    """Bass follows the rhythm guitar root in D minor — D1 (MIDI 26) drone
+    with breakdown chord stabs to F1 (29)."""
+    notes: list[dict] = []
+    cursor = 0
+    D_ROOT = 26   # D1
+    F_ROOT = 29   # F1 (minor 3rd up)
+    for sec in sections:
+        sec_start_beats = cursor * 4
+        for bar_in_sec in range(sec["bars"]):
+            b = sec_start_beats + bar_in_sec * 4
+            if sec["role"] == "intro":
+                if bar_in_sec == 0:
+                    notes.append({"pitch": D_ROOT, "start_beats": b, "length_beats": 16.0, "velocity": 90})
+                continue
+            if sec["role"] == "buildup":
+                for i in range(16):
+                    notes.append({"pitch": D_ROOT, "start_beats": b + i * 0.25,
+                                  "length_beats": 0.20, "velocity": int(80 + i * 2.5)})
+                continue
+            if sec["role"] == "breakdown":
+                # Match guitar breakdown stabs
+                notes.append({"pitch": D_ROOT, "start_beats": b + 0.0, "length_beats": 0.45, "velocity": 115})
+                notes.append({"pitch": D_ROOT, "start_beats": b + 0.5, "length_beats": 0.20, "velocity": 100})
+                notes.append({"pitch": D_ROOT, "start_beats": b + 0.75, "length_beats": 0.20, "velocity": 100})
+                notes.append({"pitch": F_ROOT, "start_beats": b + 2.0, "length_beats": 0.45, "velocity": 115})
+                notes.append({"pitch": F_ROOT, "start_beats": b + 2.5, "length_beats": 0.20, "velocity": 100})
+                notes.append({"pitch": F_ROOT, "start_beats": b + 2.75, "length_beats": 0.20, "velocity": 100})
+                continue
+            # Verse / chorus — 16th-note chugs on D
+            for beat in [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75,
+                         2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75]:
+                accent = beat in (0.0, 0.75, 1.5, 2.25, 3.0)
+                notes.append({"pitch": D_ROOT, "start_beats": b + beat,
+                              "length_beats": 0.18, "velocity": 110 if accent else 92})
+        cursor += sec["bars"]
+    return notes
+
+
+def _djent_solo(bars: int, sections: list[dict]) -> list[dict]:
+    """Lead guitar solo in D MINOR PENTATONIC over the 'solo' section.
+    D minor pent: D-F-G-A-C, plus chromatic passing tones.
+    Two octaves up: D4=62, F4=65, G4=67, A4=69, C5=72, D5=74, F5=77,
+    G5=79, A5=81, C6=84, D6=86.
+    """
+    notes: list[dict] = []
+    rng = random.Random(99)
+    pent = [62, 65, 67, 69, 72, 74, 77, 79, 81, 84, 86]
+    chromatic_extras = [63, 64, 66, 68, 71]
+
+    solo_sec = next((s for s in sections if s["name"] == "solo"), None)
+    if not solo_sec:
+        return notes
+
+    cursor_bars = 0
+    for s in sections:
+        if s["name"] == "solo":
+            break
+        cursor_bars += s["bars"]
+    solo_start_beat = cursor_bars * 4
+
+    # Phrase structure across solo:
+    # Bars 1-2: opening — long bend-style hold then descend
+    # Bars 3-4: ascending fast 16th-note run (climax buildup)
+    # Bars 5-6: blues-bend style middle (mid-register motif + repeat varied)
+    # Bars 7-8: peak — high bends + final fast lick
+    solo_bars = solo_sec["bars"]
+
+    # Phrase 1 (bars 0-1) — opening sustained bend
+    notes.append({"pitch": 77, "start_beats": solo_start_beat + 0.0,
+                  "length_beats": 2.5, "velocity": 110})   # F5 hold
+    notes.append({"pitch": 81, "start_beats": solo_start_beat + 2.5,
+                  "length_beats": 1.4, "velocity": 115})   # A5 reach
+    # Bar 2: descent down the pentatonic
+    descent = [86, 84, 81, 79, 77, 74, 72, 69]
+    for i, p in enumerate(descent):
+        notes.append({"pitch": p, "start_beats": solo_start_beat + 4.0 + i * 0.5,
+                      "length_beats": 0.40, "velocity": 95 + (i % 2) * 8})
+
+    # Phrase 2 (bars 3-4) — ascending 16th run with chromatic passing tones
+    cursor = solo_start_beat + 8.0
+    run = [62, 65, 67, 68, 69, 71, 72, 74, 77, 79, 81, 84, 86, 84, 81, 79]
+    for i, p in enumerate(run):
+        notes.append({"pitch": p, "start_beats": cursor + i * 0.25,
+                      "length_beats": 0.22, "velocity": 95 + i * 1.5})
+    # Bar 4 — held high D with vibrato
+    cursor = solo_start_beat + 12.0
+    for i in range(6):
+        notes.append({"pitch": 86,
+                      "start_beats": cursor + i * 0.5 + rng.uniform(-0.02, 0.02),
+                      "length_beats": 0.45, "velocity": 110 + rng.randint(-8, 8)})
+    notes.append({"pitch": 86, "start_beats": cursor + 3.0, "length_beats": 0.95, "velocity": 115})
+
+    # Phrase 3 (bars 5-6) — call/response pentatonic
+    cursor = solo_start_beat + 16.0
+    if solo_bars >= 6:
+        # Call: D5 → F5 → G5 → D5
+        for i, (p, t_off) in enumerate([(74, 0.0), (77, 0.5), (79, 1.0), (74, 1.5)]):
+            notes.append({"pitch": p, "start_beats": cursor + t_off,
+                          "length_beats": 0.45, "velocity": 100 + i * 4})
+        # Response: A5 → G5 → F5 → D5 → C5 (descending)
+        for i, (p, t_off) in enumerate([(81, 2.0), (79, 2.4), (77, 2.7), (74, 3.0), (72, 3.4)]):
+            notes.append({"pitch": p, "start_beats": cursor + t_off,
+                          "length_beats": 0.30, "velocity": 100})
+        # Bar 6 — tasty bend up to A5 (held)
+        notes.append({"pitch": 81, "start_beats": cursor + 4.0,
+                      "length_beats": 1.5, "velocity": 118})
+        # Walking down chromatically
+        chrom_walk = [79, 78, 77, 75, 74, 72, 71]
+        for i, p in enumerate(chrom_walk):
+            notes.append({"pitch": p, "start_beats": cursor + 5.5 + i * 0.25,
+                          "length_beats": 0.22, "velocity": 95})
+
+    # Phrase 4 (last 2 bars) — peak climax
+    if solo_bars >= 8:
+        cursor = solo_start_beat + (solo_bars - 2) * 4
+        # Fast 32nd-note pull-off lick
+        lick = [86, 84, 81, 79, 77, 79, 81, 84]
+        for i, p in enumerate(lick):
+            notes.append({"pitch": p, "start_beats": cursor + i * 0.125,
+                          "length_beats": 0.12, "velocity": 110})
+        # Climbing screaming finale
+        notes.append({"pitch": 86, "start_beats": cursor + 1.0, "length_beats": 0.45, "velocity": 120})
+        notes.append({"pitch": 89, "start_beats": cursor + 1.5, "length_beats": 0.45, "velocity": 122})  # F6
+        notes.append({"pitch": 98, "start_beats": cursor + 2.0,    # D7 peak
+                      "length_beats": 6.0, "velocity": 127})
+        # Vibrato on held note
+        for i in range(1, 5):
+            notes.append({"pitch": 98, "start_beats": cursor + 2.0 + i,
+                          "length_beats": 0.95, "velocity": 115 + (i % 2) * 8})
+    return notes
+
+
+def compose_djent_track(args: dict) -> dict:
+    """Progressive metal / djent instrumental with a guitar solo.
+
+    Form (64 bars at 110 BPM = ~2:20):
+      intro (4)  → riffA (8)  → riffB (8)  → breakdown (8)  →
+      riffA2 (8) → buildup (4) → solo (8)  → riffFinal (8)  → outro (4)
+
+    Tracks:
+      Drums          — metal kit with polyrhythmic 3-3-2 kicks + double-kick chorus
+      Bass           — locked to guitar root (B1), 16th-note chugs
+      Rhythm Guitar L— palm-mute riff, panned -0.7
+      Rhythm Guitar R— palm-mute riff doubled, panned +0.7 (the wall)
+      Lead Guitar    — solo over the 'solo' section in B minor pentatonic
+      Pad            — dark sustained background (very quiet, atmosphere only)
+
+    Production: heavy compression, EQ scoop at 500 Hz (mid scoop = "metal V"),
+    high-shelf at 6 kHz cut to keep top from screaming.
+    """
+    out_path = args["out_path"]
+    tempo = float(args.get("tempo", 110.0))
+    seed = int(args.get("seed", 0))
+    random.seed(seed)
+
+    from . import composition as comp_tools
+    from . import drum_patterns as drum_tools
+
+    # Plan arrangement using the metal form
+    plan = comp_tools.arrangement_plan({
+        "genre": "metal",
+        "target_length_seconds": 140,
+        "tempo": tempo,
+        "energy_curve": "build_drop_build",
+    })
+    sections = plan["sections"]
+    total_bars = plan["total_bars"]
+
+    edit_tools.edit_create({
+        "name": "MCP Djent",
+        "tempo": tempo, "time_sig_num": 4, "time_sig_denom": 4,
+        "key_root": 2,            # D — matches the available power-chord samples
+        "key_mode": "minor",
+        "length_beats": total_bars * 4 + 4,
+    })
+
+    # Section markers
+    cursor = 0
+    for s in sections:
+        tracks.marker_add({"name": s["name"],
+                           "start_beats": float(cursor * 4),
+                           "length_beats": float(s["bars"] * 4)})
+        cursor += s["bars"]
+
+    # 1. Drums — REAL metal samples (CC-BY freesound pack #9368 by xIceCoffeex)
+    # plus the factory 808 closed hat for the missing closed-hat slot.
+    drums = tracks.track_add({"name": "Drums", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": drums, "type": "Sampler", "name": "Metal Kit"})
+    drum_track = next(t for t in STORE.edit.tracks if t.id == drums)
+    metal_dir = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
+                 / "Factory Loops" / "Metal Samples")
+    closed_hat_factory = _drum_kit_sounds()  # use factory for the closed hat slot
+    closed_hat_sound = next((s for s in closed_hat_factory if s["keyNote"] == 42), None)
+    drum_track.plugins[-1].sounds = [
+        {"source": str(metal_dir / "kick.mp3"),
+         "name": "Metal Kick", "keyNote": 36, "minNote": 36, "maxNote": 36,
+         "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1},
+        {"source": str(metal_dir / "snare.mp3"),
+         "name": "Metal Snare", "keyNote": 38, "minNote": 37, "maxNote": 39,
+         "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1},
+        # Closed hat slot uses 808 sample (no closed hat in metal pack)
+        closed_hat_sound if closed_hat_sound else
+            {"source": str(metal_dir / "open_hh.mp3"),
+             "name": "Hat (open as closed)", "keyNote": 42, "minNote": 40, "maxNote": 44,
+             "startTime": 0.0, "gainDb": -2.0, "pan": 0.0, "openEnded": 0},
+        {"source": str(metal_dir / "open_hh.mp3"),
+         "name": "Open Hat", "keyNote": 46, "minNote": 45, "maxNote": 48,
+         "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1},
+        {"source": str(metal_dir / "crash_right.mp3"),
+         "name": "Crash", "keyNote": 49, "minNote": 49, "maxNote": 52,
+         "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1},
+        {"source": str(metal_dir / "crash_mid.mp3"),
+         "name": "Ride/Crash 2", "keyNote": 51, "minNote": 50, "maxNote": 53,
+         "startTime": 0.0, "gainDb": -2.0, "pan": 0.05, "openEnded": 1},
+    ]
+    # Aggressive compression on drum bus
+    plugins.compress_smash({"track_id": drums})
+    drum_clip = midi.midi_clip_add({"track_id": drums, "name": "Drums",
+                                    "start_beats": 0,
+                                    "length_beats": total_bars * 4})["clip_id"]
+    drum_notes = []
+    cur_bar = 0
+    for s in sections:
+        role = s["role"]
+        # Map "verse"-like sections to "verse" and "chorus"-like to "chorus";
+        # solo section uses "chorus" pattern (driving). buildup, breakdown,
+        # intro, outro are explicit.
+        drum_role_map = {"verse": "verse", "chorus": "chorus",
+                          "buildup": "buildup", "breakdown": "breakdown",
+                          "intro": "intro", "outro": "outro"}
+        drum_role = drum_role_map.get(role, "verse")
+        if s["name"] == "solo":
+            drum_role = "chorus"  # solo wants driving drums
+        ds = drum_tools.drum_pattern({
+            "genre": "metal", "role": drum_role, "length_bars": s["bars"],
+            "density": s["energy"],
+            "start_beats": float(cur_bar * 4),
+            "humanize": True, "seed": seed,
+        })
+        drum_notes.extend(ds["notes"])
+        cur_bar += s["bars"]
+    midi.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
+
+    # 2. Bass — 4OSC saw bass with grit
+    bass = tracks.track_add({"name": "Bass", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": bass, "type": "4OSC", "name": "Metal Bass"})
+    _apply_preset_to_track(bass, "4OSC", "4OSC Smack Bass WMF.trkpreset", overrides={
+        "ampAttack": 0.001, "ampDecay": 0.15, "ampSustain": 80.0, "ampRelease": 0.10,
+        "filterFreq": 95.0, "filterAmount": 0.35, "filterResonance": 0.10,
+        "tune1": 0.0, "masterLevel": 0.0,
+    })
+    plugins.compress_glue({"track_id": bass, "amount": 0.7})
+    bass_clip = midi.midi_clip_add({"track_id": bass, "name": "Bass",
+                                    "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    midi.midi_notes_add({"clip_id": bass_clip, "notes": _djent_bass(total_bars, sections)})
+
+    # 3 + 4. Rhythm Guitars — REAL distorted-guitar samples via Sampler.
+    # CC-BY freesound pack #14939 by Ax_Grinder. Two tracks, one panned hard
+    # left and one hard right, both playing the same notes for the
+    # double-tracked-guitar wall sound.
+    def _build_metal_guitar_sounds() -> list[dict]:
+        """Map MIDI triggers to power-chord samples.
+          Palm-muted samples cover the chug pitches (38..46).
+          Sustained samples cover the sustained-chord triggers (50..53).
+        """
+        return [
+            # PALM-MUTED — chug-pitch range
+            {"source": str(metal_dir / "D2_PMute.mp3"),
+             "name": "D2 PM", "keyNote": 38, "minNote": 36, "maxNote": 38,
+             "startTime": 0.0, "gainDb": 0.0, "openEnded": 1},
+            {"source": str(metal_dir / "Dsharp2_PMute.mp3"),
+             "name": "D#2 PM", "keyNote": 39, "minNote": 39, "maxNote": 39,
+             "startTime": 0.0, "gainDb": 0.0, "openEnded": 1},
+            {"source": str(metal_dir / "Fsharp2_PMute.mp3"),
+             "name": "F#2 PM", "keyNote": 42, "minNote": 40, "maxNote": 42,
+             "startTime": 0.0, "gainDb": 0.0, "openEnded": 1},
+            {"source": str(metal_dir / "G2_PMute.mp3"),
+             "name": "G2 PM", "keyNote": 43, "minNote": 43, "maxNote": 43,
+             "startTime": 0.0, "gainDb": 0.0, "openEnded": 1},
+            {"source": str(metal_dir / "Gsharp2_PMute.mp3"),
+             "name": "G#2 PM", "keyNote": 44, "minNote": 44, "maxNote": 46,
+             "startTime": 0.0, "gainDb": 0.0, "openEnded": 1},
+            # SUSTAINED — chord-stab range
+            {"source": str(metal_dir / "Dsharp3.mp3"),
+             "name": "D#3 sus", "keyNote": 51, "minNote": 50, "maxNote": 52,
+             "startTime": 0.0, "gainDb": -3.0, "openEnded": 1},
+            {"source": str(metal_dir / "F3.mp3"),
+             "name": "F3 sus", "keyNote": 53, "minNote": 53, "maxNote": 60,
+             "startTime": 0.0, "gainDb": -3.0, "openEnded": 1},
+        ]
+
+    rg_l = tracks.track_add({"name": "Rhythm Guitar L", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": rg_l, "type": "Sampler", "name": "Guitar L"})
+    rg_l_track = next(t for t in STORE.edit.tracks if t.id == rg_l)
+    rg_l_track.plugins[-1].sounds = _build_metal_guitar_sounds()
+    # The samples are already distorted — just add subtle metal-V EQ + glue comp
+    rg_l_track.plugins.append(Plugin(
+        id=_id("plg"), type="3 Band EQ", name="Metal V",
+        params={"loFreq": 100.0, "loGain": 1.0,
+                "midFreq": 500.0, "midGain": -3.0, "midQ": 0.7,
+                "hiFreq": 4000.0, "hiGain": 1.5},
+    ))
+    rg_l_clip = midi.midi_clip_add({"track_id": rg_l, "name": "Riff",
+                                     "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    midi.midi_notes_add({"clip_id": rg_l_clip,
+                          "notes": _djent_rhythm_guitar(total_bars, sections)})
+
+    rg_r = tracks.track_add({"name": "Rhythm Guitar R", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": rg_r, "type": "Sampler", "name": "Guitar R"})
+    rg_r_track = next(t for t in STORE.edit.tracks if t.id == rg_r)
+    rg_r_track.plugins[-1].sounds = _build_metal_guitar_sounds()
+    rg_r_track.plugins.append(Plugin(
+        id=_id("plg"), type="3 Band EQ", name="Metal V",
+        params={"loFreq": 100.0, "loGain": 1.0,
+                "midFreq": 500.0, "midGain": -3.0, "midQ": 0.7,
+                "hiFreq": 4000.0, "hiGain": 1.5},
+    ))
+    rg_r_clip = midi.midi_clip_add({"track_id": rg_r, "name": "Riff",
+                                     "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    midi.midi_notes_add({"clip_id": rg_r_clip,
+                          "notes": _djent_rhythm_guitar(total_bars, sections)})
+
+    # 5. Lead Guitar — bright saw with feedback-like sustain + plate verb
+    lead = tracks.track_add({"name": "Lead Guitar", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": lead, "type": "4OSC", "name": "Lead"})
+    _apply_preset_to_track(lead, "4OSC", "4OSC Bell Pad WMF.trkpreset", overrides={
+        "ampAttack": 0.005, "ampDecay": 0.6, "ampSustain": 90.0, "ampRelease": 0.8,
+        "filterFreq": 115.0, "filterAmount": 0.55, "filterResonance": 0.30,
+        "waveShape1": 2,    # saw
+        "tune1": 0.0,
+        "chorusOn": 1, "chorusMix": 0.40,
+        "masterLevel": -2.0,
+        "voicesDetune": 0.20,
+    })
+    plugins.plugin_add_reverb({"track_id": lead, "type": "plate",
+                                "size": 0.55, "decay": 0.50, "mix": 0.30,
+                                "high_damp": 0.55})
+    lead_track = next(t for t in STORE.edit.tracks if t.id == lead)
+    lead_track.plugins.append(Plugin(
+        id=_id("plg"), type="3 Band EQ", name="Lead Boost",
+        params={"loFreq": 250.0, "loGain": -6.0,             # cut low end mud
+                "midFreq": 2500.0, "midGain": 4.0, "midQ": 0.8,   # presence boost
+                "hiFreq": 6000.0, "hiGain": 2.0},
+    ))
+    lead_clip = midi.midi_clip_add({"track_id": lead, "name": "Solo",
+                                     "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    midi.midi_notes_add({"clip_id": lead_clip, "notes": _djent_solo(total_bars, sections)})
+
+    # 6. Atmospheric pad — dark, very quiet, just texture
+    pad = tracks.track_add({"name": "Pad", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": pad, "type": "4OSC", "name": "Dark Pad"})
+    _apply_preset_to_track(pad, "4OSC", "4OSC Vox Pad WMF.trkpreset", overrides={
+        "ampAttack": 1.5, "ampRelease": 2.0,
+        "filterFreq": 75.0, "filterAmount": 0.20,
+    })
+    pad_clip = midi.midi_clip_add({"track_id": pad, "name": "Atmosphere",
+                                    "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    # Single low B drone the whole song
+    midi.midi_notes_add({"clip_id": pad_clip,
+                          "notes": [{"pitch": 47, "start_beats": 0,
+                                     "length_beats": float(total_bars * 4),
+                                     "velocity": 65}]})
+
+    # ---- Mix balance from the metal reference ----
+    tracks.mix_apply_reference({"track_id": drums, "genre": "metal", "role": "drums"})
+    tracks.mix_apply_reference({"track_id": bass,  "genre": "metal", "role": "bass"})
+    tracks.mix_apply_reference({"track_id": rg_l,  "genre": "metal", "role": "rhythm_guitar_l", "pan": -0.65})
+    tracks.mix_apply_reference({"track_id": rg_r,  "genre": "metal", "role": "rhythm_guitar_r", "pan":  0.65})
+    tracks.mix_apply_reference({"track_id": lead,  "genre": "metal", "role": "lead",            "pan":  0.0})
+    tracks.mix_apply_reference({"track_id": pad,   "genre": "metal", "role": "pad"})
+
+    # Master chain — loud-edm-ish (heavy compression + bright limiter)
+    from . import workflow as wf_tools
+    wf_tools.master_chain_apply({"template": "loud_edm"})
+
+    # Save
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    edit_tools.edit_save({"path": out_path})
+
+    summary = STORE.edit.summary()
+    return {
+        "ok": True, "path": out_path, "tempo": tempo, "bars": total_bars,
+        "tracks": [t["name"] for t in summary["tracks"]],
+        "sections": [{"name": s["name"], "bars": s["bars"]} for s in sections],
+        "total_notes": sum((c.get("note_count") or 0) for t in summary["tracks"] for c in t.get("clips", [])),
+    }
+
+
+TOOLS.append({
+    "name": "compose_djent_track",
+    "description": (
+        "Generate a progressive metal / djent instrumental in B minor. "
+        "Form: intro → riffA → riffB → breakdown → riffA2 → buildup → "
+        "solo (8 bars) → riffFinal → outro. Tracks: drums (polyrhythmic "
+        "3-3-2 kicks), bass, dual rhythm guitars panned hard L/R for the "
+        "wall, lead solo over solo section, atmospheric pad. ~140 seconds "
+        "at 110 BPM."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "required": ["out_path"],
+        "properties": {
+            "out_path": {"type": "string"},
+            "tempo": {"type": "number", "default": 110.0},
+            "seed":  {"type": "integer", "default": 0},
+        },
+    },
+})
+
+
+def compose_djent_real(args: dict) -> dict:
+    """Djent track using REAL VST3 instruments and amp simulators —
+    not synth-pretending-to-be-guitars.
+
+    Signal chain per rhythm guitar track:
+      sforzando (Karoryfer Emilyguitar SFZ) → The Anvil drive →
+      MT-A (Mercuriall Metal Area amp) → TSC cabinet sim
+
+    Same form/notes/drums/bass as compose_djent_track but the rhythm
+    guitar signal is now: clean multi-articulation sampled guitar +
+    real amp & cab modeling, the way real metal producers track guitars.
+
+    REQUIREMENT: After opening the project in Waveform, double-click
+    each rhythm guitar's sforzando plugin and load:
+        C:/Users/jarms/AppData/Roaming/Tracktion/Waveform/
+        Factory Loops/SFZ/Emilyguitar/emily_basic.sfz
+    (one-time per session — sforzando state isn't saved in .tracktionedit
+    state we can write yet).
+    """
+    out_path = args["out_path"]
+    tempo = float(args.get("tempo", 110.0))
+    seed = int(args.get("seed", 0))
+    random.seed(seed)
+
+    from . import composition as comp_tools
+    from . import drum_patterns as drum_tools
+
+    # Same arrangement as compose_djent_track
+    plan = comp_tools.arrangement_plan({
+        "genre": "metal", "target_length_seconds": 140,
+        "tempo": tempo, "energy_curve": "build_drop_build",
+    })
+    sections = plan["sections"]
+    total_bars = plan["total_bars"]
+
+    edit_tools.edit_create({
+        "name": "MCP Djent (Real VSTs)",
+        "tempo": tempo, "time_sig_num": 4, "time_sig_denom": 4,
+        "key_root": 2, "key_mode": "minor",
+        "length_beats": total_bars * 4 + 4,
+    })
+
+    cursor = 0
+    for s in sections:
+        tracks.marker_add({"name": s["name"], "start_beats": float(cursor * 4),
+                            "length_beats": float(s["bars"] * 4)})
+        cursor += s["bars"]
+
+    # 1. Drums (same as before)
+    drums = tracks.track_add({"name": "Drums", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": drums, "type": "Sampler", "name": "Metal Kit"})
+    drum_track = next(t for t in STORE.edit.tracks if t.id == drums)
+    metal_dir = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
+                 / "Factory Loops" / "Metal Samples")
+    closed_hat_factory = _drum_kit_sounds()
+    closed_hat_sound = next((s for s in closed_hat_factory if s["keyNote"] == 42), None)
+    drum_track.plugins[-1].sounds = [
+        {"source": str(metal_dir / "kick.mp3"),
+         "name": "Kick", "keyNote": 36, "minNote": 36, "maxNote": 36,
+         "startTime": 0.0, "openEnded": 1},
+        {"source": str(metal_dir / "snare.mp3"),
+         "name": "Snare", "keyNote": 38, "minNote": 37, "maxNote": 39,
+         "startTime": 0.0, "openEnded": 1},
+        closed_hat_sound,
+        {"source": str(metal_dir / "open_hh.mp3"),
+         "name": "Open Hat", "keyNote": 46, "minNote": 45, "maxNote": 48,
+         "startTime": 0.0, "openEnded": 1},
+        {"source": str(metal_dir / "crash_right.mp3"),
+         "name": "Crash", "keyNote": 49, "minNote": 49, "maxNote": 52,
+         "startTime": 0.0, "openEnded": 1},
+        {"source": str(metal_dir / "crash_mid.mp3"),
+         "name": "Ride", "keyNote": 51, "minNote": 50, "maxNote": 53,
+         "startTime": 0.0, "gainDb": -2.0, "openEnded": 1},
+    ]
+    plugins.compress_smash({"track_id": drums})
+    drum_clip = midi.midi_clip_add({"track_id": drums, "name": "Drums",
+                                    "start_beats": 0,
+                                    "length_beats": total_bars * 4})["clip_id"]
+    drum_notes = []
+    cur_bar = 0
+    for s in sections:
+        role_map = {"verse": "verse", "chorus": "chorus",
+                    "buildup": "buildup", "breakdown": "breakdown",
+                    "intro": "intro", "outro": "outro"}
+        drum_role = role_map.get(s["role"], "verse")
+        if s["name"] == "solo":
+            drum_role = "chorus"
+        ds = drum_tools.drum_pattern({"genre": "metal", "role": drum_role,
+                                        "length_bars": s["bars"],
+                                        "density": s["energy"],
+                                        "start_beats": float(cur_bar * 4),
+                                        "humanize": True, "seed": seed})
+        drum_notes.extend(ds["notes"])
+        cur_bar += s["bars"]
+    midi.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
+
+    # 2. Bass
+    bass = tracks.track_add({"name": "Bass", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": bass, "type": "4OSC", "name": "Bass"})
+    _apply_preset_to_track(bass, "4OSC", "4OSC Smack Bass WMF.trkpreset", overrides={
+        "ampAttack": 0.001, "ampDecay": 0.15, "ampSustain": 80.0, "ampRelease": 0.10,
+        "filterFreq": 95.0, "filterAmount": 0.35, "filterResonance": 0.10,
+        "tune1": 0.0, "masterLevel": 0.0,
+    })
+    plugins.compress_glue({"track_id": bass, "amount": 0.7})
+    bass_clip = midi.midi_clip_add({"track_id": bass, "name": "Bass",
+                                    "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    midi.midi_notes_add({"clip_id": bass_clip, "notes": _djent_bass(total_bars, sections)})
+
+    # 3 + 4. Rhythm Guitars — REAL signal chain
+    # sforzando (clean guitar SFZ) → The Anvil (drive) → MT-A (amp) → TSC (cab)
+    SFORZANDO_VST3 = "1026018B"   # sforzando uniqueId from plugin_discover
+    ANVIL_VST3     = "96925B51"   # The Anvil
+    MTA_VST3       = "255875C0"   # Mercuriall Metal Area
+    TSC_VST2_FILE  = r"C:\Program Files\Steinberg\VSTPlugins\TSC 1.1.dll"
+    SFZ_PATH       = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
+                      / "Factory Loops" / "SFZ" / "Emilyguitar" / "emily_basic.sfz")
+
+    def _add_real_guitar_track(name: str, pan: float) -> str:
+        track_id = tracks.track_add({"name": name, "kind": "midi"})["track_id"]
+        # 1. sforzando — instrument loading the SFZ
+        plugins.plugin_add({"track_id": track_id, "type": SFORZANDO_VST3,
+                            "name": "sforzando"})
+        # 2. The Anvil — drive pedal
+        plugins.plugin_add({"track_id": track_id, "type": ANVIL_VST3,
+                            "name": "Anvil Drive"})
+        # 3. MT-A — Metal Area amp
+        plugins.plugin_add({"track_id": track_id, "type": MTA_VST3,
+                            "name": "Metal Area"})
+        # 4. TSC — Tube Cabinet Sim (VST2 via file path)
+        plugins.plugin_add({"track_id": track_id, "type": "TSC 1.1",
+                            "name": "TSC Cab", "preset_path": TSC_VST2_FILE})
+        return track_id
+
+    rg_l = _add_real_guitar_track("Rhythm Guitar L", -0.65)
+    rg_r = _add_real_guitar_track("Rhythm Guitar R", 0.65)
+
+    rg_l_clip = midi.midi_clip_add({"track_id": rg_l, "name": "Riff",
+                                     "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    rg_r_clip = midi.midi_clip_add({"track_id": rg_r, "name": "Riff",
+                                     "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    rhythm_notes = _djent_rhythm_guitar(total_bars, sections)
+    midi.midi_notes_add({"clip_id": rg_l_clip, "notes": rhythm_notes})
+    midi.midi_notes_add({"clip_id": rg_r_clip, "notes": rhythm_notes})
+
+    # 5. Lead Guitar — also via sforzando + lighter amp chain
+    lead = tracks.track_add({"name": "Lead Guitar", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": lead, "type": SFORZANDO_VST3, "name": "sforzando"})
+    plugins.plugin_add({"track_id": lead, "type": ANVIL_VST3, "name": "Lead Drive"})
+    plugins.plugin_add({"track_id": lead, "type": MTA_VST3, "name": "Lead Amp"})
+    plugins.plugin_add({"track_id": lead, "type": "TSC 1.1", "name": "Lead Cab",
+                        "preset_path": TSC_VST2_FILE})
+    plugins.plugin_add_reverb({"track_id": lead, "type": "plate",
+                                "size": 0.55, "decay": 0.50, "mix": 0.30})
+    lead_clip = midi.midi_clip_add({"track_id": lead, "name": "Solo",
+                                     "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    midi.midi_notes_add({"clip_id": lead_clip, "notes": _djent_solo(total_bars, sections)})
+
+    # 6. Pad — atmospheric (synth, this one's fine as 4OSC)
+    pad = tracks.track_add({"name": "Pad", "kind": "midi"})["track_id"]
+    plugins.plugin_add({"track_id": pad, "type": "4OSC", "name": "Pad"})
+    _apply_preset_to_track(pad, "4OSC", "4OSC Vox Pad WMF.trkpreset", overrides={
+        "ampAttack": 1.5, "ampRelease": 2.0, "filterFreq": 75.0, "filterAmount": 0.20,
+    })
+    pad_clip = midi.midi_clip_add({"track_id": pad, "name": "Atmosphere",
+                                    "start_beats": 0, "length_beats": total_bars * 4})["clip_id"]
+    midi.midi_notes_add({"clip_id": pad_clip,
+                          "notes": [{"pitch": 47, "start_beats": 0,
+                                     "length_beats": float(total_bars * 4),
+                                     "velocity": 65}]})
+
+    # Mix
+    tracks.mix_apply_reference({"track_id": drums, "genre": "metal", "role": "drums"})
+    tracks.mix_apply_reference({"track_id": bass,  "genre": "metal", "role": "bass"})
+    tracks.mix_apply_reference({"track_id": rg_l,  "genre": "metal",
+                                  "role": "rhythm_guitar_l", "pan": -0.65})
+    tracks.mix_apply_reference({"track_id": rg_r,  "genre": "metal",
+                                  "role": "rhythm_guitar_r", "pan":  0.65})
+    tracks.mix_apply_reference({"track_id": lead,  "genre": "metal", "role": "lead"})
+    tracks.mix_apply_reference({"track_id": pad,   "genre": "metal", "role": "pad"})
+
+    from . import workflow as wf_tools
+    wf_tools.master_chain_apply({"template": "loud_edm"})
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    edit_tools.edit_save({"path": out_path})
+    summary = STORE.edit.summary()
+    return {
+        "ok": True, "path": out_path, "tempo": tempo, "bars": total_bars,
+        "tracks": [t["name"] for t in summary["tracks"]],
+        "total_notes": sum((c.get("note_count") or 0) for t in summary["tracks"] for c in t.get("clips", [])),
+        "manual_step_required": (
+            "Open each Rhythm Guitar / Lead Guitar track's sforzando plugin "
+            "and load the SFZ file: " + str(SFZ_PATH)
+        ),
+    }
+
+
+TOOLS.append({
+    "name": "compose_djent_real",
+    "description": (
+        "Djent track using REAL VST3 instruments + amp/cab simulators "
+        "(sforzando + Karoryfer Emilyguitar SFZ → The Anvil drive → "
+        "Mercuriall Metal Area amp → TSC cab) instead of synthetic 4OSC. "
+        "Returns a manual_step_required note explaining you must load the "
+        "SFZ in sforzando once after opening the project — sforzando state "
+        "isn't preserved in our .tracktionedit writer yet."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "required": ["out_path"],
+        "properties": {
+            "out_path": {"type": "string"},
+            "tempo": {"type": "number", "default": 110.0},
+            "seed":  {"type": "integer", "default": 0},
+        },
+    },
+})
+
+
 HANDLERS = {
     "compose_lofi_track": compose_lofi_track,
     "compose_rainstorm": compose_rainstorm,
     "compose_synthwave_track": compose_synthwave_track,
     "compose_from_primitives": compose_from_primitives,
+    "compose_djent_track": compose_djent_track,
+    "compose_djent_real": compose_djent_real,
 }

@@ -415,6 +415,18 @@ _GENRE_FORMS: dict[str, list[tuple[str, str, float]]] = {
 }
 _GENRE_FORMS["techno"] = _GENRE_FORMS["edm"]
 
+_GENRE_FORMS["metal"] = [
+    ("intro", "intro", 0.5),
+    ("riffA", "verse", 1.0),
+    ("riffB", "chorus", 1.0),
+    ("breakdown", "breakdown", 1.0),
+    ("riffA2", "verse", 1.0),
+    ("buildup", "buildup", 0.5),
+    ("solo", "chorus", 1.5),       # solo section gets extra space
+    ("riffFinal", "chorus", 1.0),
+    ("outro", "outro", 0.5),
+]
+
 
 # Energy curves: (section_role, base_energy)
 _ENERGY_CURVES: dict[str, dict[str, float]] = {

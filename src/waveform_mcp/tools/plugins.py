@@ -11,6 +11,7 @@ from typing import Any
 
 from ..model import Edit, Plugin, _id
 from .common import op
+from .preset_library import BUILTIN_PLUGIN_TYPES
 
 # Curated list of built-ins we know about (research notes from Waveform 13).
 BUILTIN_INSTRUMENTS = ["4OSC", "Wavetable", "MicroDrumSampler", "Multisampler", "Collective"]
@@ -194,6 +195,40 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "plugin_state_capture",
+        "description": (
+            "Read a saved .tracktionedit file and extract a VST plugin's "
+            "base64 state blob by plugin_name (substring match) or unique_id. "
+            "Used to copy a manually-loaded plugin's configuration (e.g. an "
+            "SFZ loaded into sforzando) for re-use programmatically."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "edit_file_path": {"type": "string"},
+                "plugin_name":    {"type": "string"},
+                "unique_id":      {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "plugin_set_vst_state",
+        "description": (
+            "Apply a base64 VST state blob (from plugin_state_capture) to an "
+            "existing plugin in the in-memory Edit. Lets you copy one "
+            "configured VST onto every other instance."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["track_id", "plugin_id", "state"],
+            "properties": {
+                "track_id":  {"type": "string"},
+                "plugin_id": {"type": "string"},
+                "state":     {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "plugin_add_macro",
         "description": (
             "Add a MacroParameter (single 0..1 knob) to a plugin. Macros are "
@@ -253,10 +288,46 @@ def plugin_add(
     name: str | None = None,
     preset_path: str | None = None,
 ) -> dict:
+    """Add a plugin to a track. `type` accepts:
+      - Built-in plugin name ('4OSC', 'Sampler', '3 Band EQ', etc.)
+      - VST3 uniqueId or VST plugin name — auto-resolved against the
+        knownPluginList64.settings cache so the proper <PLUGIN type="vst"
+        ... filename uniqueId uid name manufacturer/> XML is emitted.
+    """
     t = edit.track(track_id)
-    p = Plugin(id=_id("plg"), type=type, name=name or type, preset_path=preset_path)
+
+    # Try to resolve external VSTs from the scanned plugin list.
+    vst_match = None
+    type_lower = type.lower()
+    if type not in BUILTIN_PLUGIN_TYPES and type_lower not in (
+        c.lower() for c in BUILTIN_PLUGIN_TYPES.values()
+    ):
+        scanned = _read_vst_list()
+        # Match by uniqueId, uid, filename basename, or name
+        for plug in scanned:
+            if (plug["uniqueId"].lower() == type_lower or
+                plug["uid"].lower() == type_lower or
+                plug["name"].lower() == type_lower):
+                vst_match = plug
+                break
+
+    if vst_match:
+        p = Plugin(
+            id=_id("plg"),
+            type="vst",
+            name=name or vst_match["name"],
+            preset_path=preset_path,
+            vst_filename=vst_match["file"],
+            vst_unique_id=vst_match["uniqueId"],
+            vst_uid=vst_match["uid"],
+            vst_manufacturer=vst_match["manufacturer"],
+        )
+    else:
+        p = Plugin(id=_id("plg"), type=type, name=name or type, preset_path=preset_path)
     t.plugins.append(p)
-    return {"track_id": track_id, "plugin_id": p.id}
+    return {"track_id": track_id, "plugin_id": p.id,
+            "resolved_as": "vst" if vst_match else "builtin",
+            "filename": vst_match["file"] if vst_match else None}
 
 
 @op("plugin_set_param", intent_template="Set {param} on {plugin_id}")
@@ -500,6 +571,57 @@ def plugin_add_modifier(
     }
 
 
+def plugin_state_capture(args: dict) -> dict:
+    """Read the current Edit XML and find a VST plugin's state by name.
+    Returns the base64 state blob, useful for copying a manually-loaded
+    plugin's configuration (e.g. an SFZ loaded into sforzando) into other
+    plugins of the same type programmatically.
+    """
+    import re
+    edit_path = args.get("edit_file_path",
+        r"C:\Users\jarms\OneDrive\Documents\MCP-Validate\MCP-Validate Edit 1.tracktionedit")
+    target_name = args.get("plugin_name", "").lower()
+    target_unique_id = args.get("unique_id", "").lower()
+    if not (target_name or target_unique_id):
+        return {"ok": False, "error": "pass plugin_name or unique_id"}
+    try:
+        xml = open(edit_path, encoding="utf-8").read()
+    except FileNotFoundError:
+        return {"ok": False, "error": f"file not found: {edit_path}"}
+
+    # Plugins can span multiple lines; capture the full open tag including state.
+    pattern = re.compile(r'<PLUGIN\b[^/>]*?type="vst"[^/>]*?(?:/>|>)', re.DOTALL)
+    for m in pattern.finditer(xml):
+        block = m.group(0)
+        name_m = re.search(r'name="([^"]+)"', block)
+        uid_m = re.search(r'uniqueId="([^"]+)"', block)
+        if (target_name and name_m and target_name in name_m.group(1).lower()) or \
+           (target_unique_id and uid_m and target_unique_id == uid_m.group(1).lower()):
+            state_m = re.search(r'state="([^"]*)"', block)
+            return {
+                "ok": True,
+                "name": name_m.group(1) if name_m else None,
+                "unique_id": uid_m.group(1) if uid_m else None,
+                "state": state_m.group(1) if state_m else None,
+                "has_state": bool(state_m),
+            }
+    return {"ok": False, "error": "no matching VST plugin found"}
+
+
+@op("plugin_set_vst_state", intent_template="Set VST state on {plugin_id}")
+def plugin_set_vst_state(edit: Edit, track_id: str, plugin_id: str, state: str) -> dict:
+    """Apply a captured VST state blob to an existing plugin in the model.
+    Pair with plugin_state_capture to copy a manually-loaded plugin's state
+    (like an SFZ loaded into sforzando) onto every other instance.
+    """
+    t = edit.track(track_id)
+    plug = next((p for p in t.plugins if p.id == plugin_id), None)
+    if plug is None:
+        raise KeyError(f"plugin {plugin_id} not found")
+    plug.vst_state = state
+    return {"plugin_id": plugin_id, "state_size": len(state) if state else 0}
+
+
 @op("plugin_add_macro", intent_template="Add macro '{name}' on {plugin_id}")
 def plugin_add_macro(
     edit: Edit,
@@ -609,6 +731,8 @@ HANDLERS = {
     "plugin_add_drum_kit": plugin_add_drum_kit,
     "plugin_add_modifier": plugin_add_modifier,
     "plugin_add_macro": plugin_add_macro,
+    "plugin_state_capture": plugin_state_capture,
+    "plugin_set_vst_state": plugin_set_vst_state,
     "plugin_discover": plugin_discover,
     "eq_high_pass": eq_high_pass,
     "eq_low_pass": eq_low_pass,

@@ -493,6 +493,20 @@ GENRES: dict[str, dict] = {
 #   "reverb_send"  → effect-bus return for shared reverb
 
 MIX_BALANCE: dict[str, dict[str, float]] = {
+    # Metal / djent: drums and rhythm guitars dominate, bass is THICK and
+    # follows the riff, lead solo is forward but not on top of guitars.
+    # Wall-of-sound aesthetic — everything fights for the same midrange,
+    # mix is about balancing within a constrained dynamic window.
+    "metal": {
+        "drums": -5.0, "kick": -4.0, "snare": -5.0, "hat": -12.0,
+        "bass": -10.0, "sub_bass": -14.0,
+        "lead": -10.0,                          # the solo
+        "rhythm_guitar": -8.0,                  # the wall
+        "rhythm_guitar_l": -8.0, "rhythm_guitar_r": -8.0,
+        "pad": -22.0,                           # atmosphere only
+        "keys": -20.0,
+        "ambience": -28.0, "fx": -16.0,
+    },
     # Synthwave (user-approved): arp is the melody focus, bass is background-
     # level texture not a driver, lead is muted (saw + plate verb sounded
     # thin and got in the arp's way). Pad sits underneath as atmosphere.

@@ -48,9 +48,18 @@ class Note:
 @dataclass
 class Plugin:
     id: str
-    type: str                   # "4OSC" | "Wavetable" | "MicroDrumSampler" | "Multisampler" | vst3-uid
+    type: str                   # "4OSC" / "sampler" / built-in code, OR "vst" / "vst3" for external
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+    # External VST plugin metadata. Tracktion's <PLUGIN type="vst" .../> needs
+    # filename + uniqueId + uid + manufacturer to resolve a specific scanned
+    # VST. `state` is the base64 plugin-state blob (e.g. holds sforzando's
+    # loaded SFZ path).
+    vst_filename: str | None = None
+    vst_unique_id: str | None = None
+    vst_uid: str | None = None
+    vst_manufacturer: str | None = None
+    vst_state: str | None = None
     # Mod matrix items: list of {modParam, modItem, modDepth}. Captured from
     # real .trkpreset files; empty by default. The writer emits a populated
     # <MODMATRIX> when this is non-empty, otherwise <MODMATRIX/>.

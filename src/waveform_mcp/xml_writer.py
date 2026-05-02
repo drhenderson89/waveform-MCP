@@ -386,12 +386,27 @@ def _build_plugin(parent: ET.Element, p: Plugin, ids: _IdAllocator) -> ET.Elemen
     # the model holds a friendly name. Pass-through if already a code.
     from .tools.preset_library import BUILTIN_PLUGIN_TYPES
     type_code = BUILTIN_PLUGIN_TYPES.get(p.type, p.type)
-    _attr(el, type=type_code, id=plugin_id, enabled=p.enabled)
-    # `frozen="0"` is on every plugin in real Waveform output; omit on the
-    # implicit volume/level which we emit elsewhere without it for backwards
-    # compat with our existing reference fixture.
-    if type_code not in ("volume", "level"):
-        _attr(el, frozen=False)
+
+    # External VST detection: if the model has VST metadata fields populated
+    # (filename + unique_id), emit type="vst" with the full attribute set
+    # Tracktion needs to RESOLVE the plugin from its scanned plugin list.
+    # Schema captured from a real Waveform-saved fixture (sforzando):
+    #   <PLUGIN type="vst" uniqueId uid filename name manufacturer state/>
+    if p.vst_filename and p.vst_unique_id:
+        _attr(el, type="vst", id=plugin_id, enabled=p.enabled, frozen=False,
+              uniqueId=p.vst_unique_id.lower(),
+              uid=p.vst_uid.lower() if p.vst_uid else None,
+              filename=p.vst_filename,
+              name=p.name or p.type,
+              manufacturer=p.vst_manufacturer or None,
+              state=p.vst_state or None)
+    else:
+        _attr(el, type=type_code, id=plugin_id, enabled=p.enabled)
+        # `frozen="0"` is on every plugin in real Waveform output; omit on the
+        # implicit volume/level which we emit elsewhere without it for backwards
+        # compat with our existing reference fixture.
+        if type_code not in ("volume", "level"):
+            _attr(el, frozen=False)
 
     # Plugin params as direct attributes
     for k, v in p.params.items():

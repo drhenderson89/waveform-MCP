@@ -189,6 +189,53 @@ PATTERNS: dict[tuple[str, str], dict[int, list[tuple[float, int]]]] = {
         46: [(3.5, 80)],
     },
 
+    # =================== METAL / DJENT ===================
+    # Djent characteristic: kick locked tight to guitar palm-mutes,
+    # snare on 2/4, ride or hat 8ths, periodic double-kick bursts.
+    # Heavy 4-on-floor for breakdowns, polyrhythmic 3-3-2 kick groupings.
+    ("metal", "verse"): {
+        36: [(0.0, 115), (0.75, 100), (1.5, 105), (2.25, 100), (3.0, 110)],   # 3-3-2 polyrhythm kick
+        38: [(1.0, 115), (3.0, 115)],                                          # snare 2/4
+        42: [(i * 0.5, 75 if i % 2 == 0 else 60) for i in range(8)],           # 8th hats
+    },
+    ("metal", "chorus"): {
+        # Double-kick gallops + accent snare
+        36: [(i * 0.25, 115) for i in range(16) if i not in (4, 12)],          # constant 16th kick except snare hits
+        38: [(1.0, 120), (3.0, 120)],
+        42: [(i * 0.5, 80) for i in range(8)],
+        51: [(0.0, 95), (1.0, 95), (2.0, 95), (3.0, 95)],                       # ride drives chorus
+    },
+    ("metal", "breakdown"): {
+        # The half-time djent crush — kick on 1 and 3 with palm-mute hits in between
+        36: [(0.0, 120), (0.5, 95), (0.75, 100), (1.5, 95),
+             (2.0, 120), (2.5, 95), (2.75, 100), (3.5, 95)],
+        38: [(2.0, 120)],                                                      # snare on 3 only (half-time)
+        49: [(0.0, 105)],                                                      # crash on 1
+    },
+    ("metal", "buildup"): {
+        # Snare roll + double-kick crescendo into the next section
+        36: [(i * 0.25, int(95 + i * 1.2)) for i in range(16)],
+        38: [(i * 0.125, int(60 + i * 1.5)) for i in range(32)],
+        42: [(i * 0.25, 70) for i in range(16)],
+    },
+    ("metal", "intro"): {
+        36: [(0.0, 110), (2.0, 110)],
+        38: [(1.0, 100), (3.0, 100)],
+    },
+    ("metal", "outro"): {
+        36: [(0.0, 115), (1.0, 115), (2.0, 115), (3.0, 115)],                   # 4-on-floor stomp
+        38: [(1.0, 115), (3.0, 115)],
+        49: [(0.0, 110)],
+    },
+    ("metal", "fill"): {
+        38: [(0.0, 95), (0.25, 100), (0.5, 105), (0.75, 100),
+             (1.0, 110), (1.25, 105), (1.5, 110), (1.75, 115),
+             (2.0, 115), (2.25, 110), (2.5, 115), (2.75, 120),
+             (3.0, 120), (3.25, 115), (3.5, 120), (3.75, 125)],                 # 16th-note snare crescendo
+        50: [(0.5, 90), (1.5, 95)],                                             # tom accents
+        45: [(2.5, 100), (3.5, 105)],
+    },
+
     # =================== GENERIC FILL / CRASH ===================
     ("any", "fill_short"): {
         38: [(2.5, 70), (2.75, 75), (3.0, 80), (3.25, 85), (3.5, 90), (3.75, 95)],
