@@ -150,6 +150,14 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
         "track_id": drums_id, "name": "Drums",
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
+    # Lofi drum patterns in the library ALREADY have ~60 ms swing baked
+    # into the hat positions (see drum_patterns.py:88, the 0.06 offset
+    # on odd-index hats). Passing swing=N on top doubles the offset:
+    # 0.56 (baked) + N (param) = 0.6+ on every off-beat hat, which is
+    # 80-100 ms off-grid at 75 BPM and reads as drift, not groove.
+    # We pass swing=0.0 to let the library's built-in swing carry the
+    # feel cleanly.
+    song_swing = 0.0
     drum_notes: list[dict] = []
     cursor_bar = 0
     for sec in sections_plan:
@@ -168,14 +176,28 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
                 "genre": "lofi", "role": sec_role, "length_bars": sec_bars,
                 "density": density,
                 "start_beats": float(cursor_bar * 4),
-                "swing": rng.uniform(0.02, 0.06),
-                "humanize": True, "seed": seed * 31 + cursor_bar,
+                "swing": song_swing,                  # CONSISTENT across song
+                # Humanize off — combined with the lofi pattern's baked-
+                # in 60 ms hat swing it was producing >100 ms off-grid
+                # drift on some hits, reading as sloppy rather than
+                # groovy. The pattern's own swing carries the feel.
+                "humanize": False,
+                "seed": seed * 31 + cursor_bar,
             })
             drum_notes.extend(r.get("notes", []))
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning("layer generation failed: %s", e)
         cursor_bar += sec_bars
+
+    # Snap every drum hit to the 8th-note grid. The lofi pattern library
+    # bakes a 60 ms hat swing into off-beat positions which cumulates with
+    # any other timing source to produce drift the listener reads as
+    # sloppy. Lock to grid for tight feel; rely on velocity dynamics for
+    # groove instead of timing.
+    for n in drum_notes:
+        n["start_beats"] = round(float(n["start_beats"]) * 2) / 2
+
     if drum_notes:
         midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
 
