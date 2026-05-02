@@ -283,6 +283,135 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     if lead_notes_all:
         midi_tools.midi_notes_add({"clip_id": lead_clip, "notes": lead_notes_all})
 
+    # --- 9b. Sub Bass — sustained octave-low chord roots (60% chance) ---
+    sub_id = None
+    if rng.random() < 0.6:
+        sub_id = track_tools.track_add({"name": "Sub Bass", "kind": "midi"})["track_id"]
+        plugin_tools.plugin_add({"track_id": sub_id, "type": "4OSC"})
+        sub_clip = midi_tools.midi_clip_add({
+            "track_id": sub_id, "name": "Sub",
+            "start_beats": 0.0, "length_beats": total_bars * 4,
+        })["clip_id"]
+        sub_notes = []
+        for bar in range(total_bars):
+            sec = _section_at_bar(sections_plan, bar)
+            # Sub mutes during intro/outro to leave space for entry
+            if sec and sec["role"] in ("intro", "outro"):
+                continue
+            chord = progression_chords[bar % len(progression_chords)]
+            # Octave below the main bass root for real low end
+            sub_notes.append({
+                "pitch": int(chord["bass_root"]) - 12,
+                "start_beats": float(bar * 4),
+                "length_beats": 4.05,    # sustain across the bar
+                "velocity": 85,
+            })
+        if sub_notes:
+            midi_tools.midi_notes_add({"clip_id": sub_clip, "notes": sub_notes})
+
+    # --- 9c. Pluck — short percussive chord stabs on offbeats (50% chance) ---
+    pluck_id = None
+    if rng.random() < 0.5:
+        pluck_id = track_tools.track_add({"name": "Pluck", "kind": "midi"})["track_id"]
+        plugin_tools.plugin_add({"track_id": pluck_id, "type": "4OSC"})
+        pluck_clip = midi_tools.midi_clip_add({
+            "track_id": pluck_id, "name": "Pluck",
+            "start_beats": 0.0, "length_beats": total_bars * 4,
+        })["clip_id"]
+        pluck_notes = []
+        # Stabs on the "&" of beats 2 and 4 (synthwave offbeat pluck pattern)
+        # in 4/4: positions 1.5 and 3.5 of each bar
+        for bar in range(total_bars):
+            sec = _section_at_bar(sections_plan, bar)
+            if sec and sec["role"] in ("intro", "outro", "breakdown"):
+                continue
+            chord = progression_chords[bar % len(progression_chords)]
+            for offset in (1.5, 3.5):
+                # Play the upper voicing notes, very short
+                for p in chord["voicing"][:2]:
+                    pluck_notes.append({
+                        "pitch": int(p) + 12,    # extra octave up for brightness
+                        "start_beats": float(bar * 4 + offset),
+                        "length_beats": 0.2,    # staccato
+                        "velocity": 85,
+                    })
+        if pluck_notes:
+            midi_tools.midi_notes_add({"clip_id": pluck_clip, "notes": pluck_notes})
+
+    # --- 9d. Counter melody — rhythmic counterpoint during verses (50%) ---
+    counter_id = None
+    if rng.random() < 0.5:
+        counter_id = track_tools.track_add({"name": "Counter", "kind": "midi"})["track_id"]
+        plugin_tools.plugin_add({"track_id": counter_id, "type": "4OSC"})
+        counter_clip = midi_tools.midi_clip_add({
+            "track_id": counter_id, "name": "Counter",
+            "start_beats": 0.0, "length_beats": total_bars * 4,
+        })["clip_id"]
+        counter_notes_all = []
+        cursor_bar = 0
+        for sec_idx, sec in enumerate(sections_plan):
+            sec_bars = sec["bars"]
+            # Counter melody plays in VERSE sections — fills the space lead leaves
+            if sec["role"] != "verse" or sec_bars < 4:
+                cursor_bar += sec_bars
+                continue
+            try:
+                cm = mel_tools.melody_generate({
+                    "root": key_root, "mode": key_mode,
+                    "length_beats": float(sec_bars * 4),
+                    "contour": rng.choice(_CONTOURS),
+                    "density": "sparse",   # counter should be airy
+                    "register_octave": 4,  # lower than lead's octave-6
+                    "seed": seed * 67 + sec_idx,
+                })
+                section_notes = _quantize_melody_to_grid(
+                    cm.get("notes", []), grid_beats=0.5, min_length_beats=0.25,
+                )
+                for n in section_notes:
+                    counter_notes_all.append({
+                        "pitch": int(n["pitch"]),
+                        "start_beats": float(n["start_beats"]) + cursor_bar * 4,
+                        "length_beats": float(n["length_beats"]),
+                        "velocity": int(n.get("velocity", 75)),
+                    })
+            except Exception:
+                pass
+            cursor_bar += sec_bars
+        if counter_notes_all:
+            midi_tools.midi_notes_add({"clip_id": counter_clip,
+                                        "notes": counter_notes_all})
+
+    # --- 9e. Pad B — second pad layer with different voicing (40% chance) ---
+    pad_b_id = None
+    if rng.random() < 0.4:
+        pad_b_id = track_tools.track_add({"name": "Pad B", "kind": "midi"})["track_id"]
+        plugin_tools.plugin_add({"track_id": pad_b_id, "type": "4OSC"})
+        pad_b_clip = midi_tools.midi_clip_add({
+            "track_id": pad_b_id, "name": "Pad B",
+            "start_beats": 0.0, "length_beats": total_bars * 4,
+        })["clip_id"]
+        pad_b_notes = []
+        for bar in range(total_bars):
+            sec = _section_at_bar(sections_plan, bar)
+            if sec and sec["role"] in ("intro", "outro"):
+                continue
+            chord = progression_chords[bar % len(progression_chords)]
+            # Pad B sits an octave above main pad with just root + 5th for openness
+            pad_b_notes.append({
+                "pitch": int(chord["bass_root"]) + 24,   # 2 octaves up
+                "start_beats": float(bar * 4),
+                "length_beats": 4.05,
+                "velocity": 50,
+            })
+            pad_b_notes.append({
+                "pitch": int(chord["bass_root"]) + 24 + 7,  # +5th
+                "start_beats": float(bar * 4),
+                "length_beats": 4.05,
+                "velocity": 45,
+            })
+        if pad_b_notes:
+            midi_tools.midi_notes_add({"clip_id": pad_b_clip, "notes": pad_b_notes})
+
     # --- 10. Mix balance ---
     track_tools.mix_apply_reference({"track_id": drums_id,
                                       "genre": "synthwave", "role": "drums",
@@ -299,6 +428,24 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     track_tools.mix_apply_reference({"track_id": lead_id,
                                       "genre": "synthwave", "role": "lead",
                                       "offset_db": +3})
+    if sub_id:
+        track_tools.mix_apply_reference({"track_id": sub_id,
+                                          "genre": "synthwave", "role": "sub_bass",
+                                          "offset_db": +6})
+    if pluck_id:
+        # Pluck is decorative — sit it under the arp
+        track_tools.mix_apply_reference({"track_id": pluck_id,
+                                          "genre": "synthwave", "role": "arp",
+                                          "offset_db": -4})
+    if counter_id:
+        track_tools.mix_apply_reference({"track_id": counter_id,
+                                          "genre": "synthwave", "role": "counter",
+                                          "offset_db": +2})
+    if pad_b_id:
+        # Pad B is a glue layer — barely-there
+        track_tools.mix_apply_reference({"track_id": pad_b_id,
+                                          "genre": "synthwave", "role": "pad",
+                                          "offset_db": -8})
 
     # Master pulled back so transients have headroom
     STORE.edit.master_volume_db = -2.0
@@ -307,6 +454,12 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     edit_tools.edit_save({"path": out_path})
 
+    optional_layers = {
+        "sub_bass": sub_id is not None,
+        "pluck":    pluck_id is not None,
+        "counter":  counter_id is not None,
+        "pad_b":    pad_b_id is not None,
+    }
     return {
         "ok": True,
         "path": out_path,
@@ -319,6 +472,8 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "energy_curve": energy_curve,
         "arp_direction": arp_direction,
         "chord_roots": [int(c["bass_root"]) for c in progression_chords],
+        "optional_layers": optional_layers,
+        "track_count": 5 + sum(optional_layers.values()),
     }
 
 
