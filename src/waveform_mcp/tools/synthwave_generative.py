@@ -324,39 +324,19 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "track_id": lead_id, "name": "Lead",
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
-    lead_notes_all = []
-    cursor_bar = 0
-    for sec_idx, sec in enumerate(sections_plan):
-        sec_bars = sec["bars"]
-        # Lead enters in chorus/verse; absent in intro/outro/buildup/breakdown
-        if sec["role"] in ("intro", "outro", "buildup", "breakdown") or sec_bars < 4:
-            cursor_bar += sec_bars
-            continue
-        try:
-            mel = mel_tools.melody_generate({
-                "root": key_root, "mode": key_mode,
-                "length_beats": float(sec_bars * 4),
-                "contour": rng.choice(_CONTOURS),
-                "density": rng.choice(_DENSITIES),
-                "register_octave": 6,    # synthwave lead sits high
-                "seed": seed * 59 + sec_idx,
-            })
-            section_notes = _quantize_melody_to_grid(
-                mel.get("notes", []),
-                grid_beats=0.5,
-                min_length_beats=0.25,
-            )
-            for n in section_notes:
-                lead_notes_all.append({
-                    "pitch": int(n["pitch"]),
-                    "start_beats": float(n["start_beats"]) + cursor_bar * 4,
-                    "length_beats": float(n["length_beats"]),
-                    "velocity": int(n.get("velocity", 90)),
-                })
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("layer generation failed: %s", e)
-        cursor_bar += sec_bars
+    # Chord-aware lead — pulls notes from the current chord's tones so
+    # borrowed/non-diatonic chords don't clash with a key-bound scale.
+    # Centered in octave 5 (MIDI 72-84) which is the standard synthwave
+    # lead register. Previous implementation called melody_generate with
+    # the song's key only, ignoring chord changes, which produced
+    # out-of-tune notes against borrowed chords.
+    lead_notes_all = _chord_aware_lead(
+        progression_chords=progression_chords,
+        sections_plan=sections_plan,
+        total_bars=total_bars,
+        base_octave_midi=72,    # C5 — sits above pad/keys, below scream
+        seed=seed * 59 + 1,
+    )
     if lead_notes_all:
         midi_tools.midi_notes_add({"clip_id": lead_clip, "notes": lead_notes_all})
 
@@ -424,36 +404,23 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
             "track_id": counter_id, "name": "Counter",
             "start_beats": 0.0, "length_beats": total_bars * 4,
         })["clip_id"]
-        counter_notes_all = []
-        cursor_bar = 0
-        for sec_idx, sec in enumerate(sections_plan):
-            sec_bars = sec["bars"]
-            # Counter melody plays in VERSE sections — fills the space lead leaves
-            if sec["role"] != "verse" or sec_bars < 4:
-                cursor_bar += sec_bars
-                continue
-            try:
-                cm = mel_tools.melody_generate({
-                    "root": key_root, "mode": key_mode,
-                    "length_beats": float(sec_bars * 4),
-                    "contour": rng.choice(_CONTOURS),
-                    "density": "sparse",   # counter should be airy
-                    "register_octave": 4,  # lower than lead's octave-6
-                    "seed": seed * 67 + sec_idx,
-                })
-                section_notes = _quantize_melody_to_grid(
-                    cm.get("notes", []), grid_beats=0.5, min_length_beats=0.25,
-                )
-                for n in section_notes:
-                    counter_notes_all.append({
-                        "pitch": int(n["pitch"]),
-                        "start_beats": float(n["start_beats"]) + cursor_bar * 4,
-                        "length_beats": float(n["length_beats"]),
-                        "velocity": int(n.get("velocity", 75)),
-                    })
-            except Exception:
-                pass
-            cursor_bar += sec_bars
+        # Chord-aware counter: same approach as the lead but in a lower
+        # register (octave 4 = MIDI 60, below the C5 lead). Plays only
+        # during verses (skips chorus/bridge/intro/outro/buildup/breakdown)
+        # so it fills space the lead leaves.
+        counter_notes_all = _chord_aware_lead(
+            progression_chords=progression_chords,
+            sections_plan=sections_plan,
+            total_bars=total_bars,
+            base_octave_midi=60,   # C4 — under the C5 lead
+            seed=seed * 67 + 7,
+            sec_role_filter=("intro", "outro", "buildup", "breakdown",
+                             "chorus", "chorus_a", "chorus_b", "bridge"),
+            rest_chance=0.55,    # counter is sparse
+        )
+        # Counter is supposed to be quieter than the lead
+        for n in counter_notes_all:
+            n["velocity"] = max(40, int(n["velocity"]) - 20)
         if counter_notes_all:
             midi_tools.midi_notes_add({"clip_id": counter_clip,
                                         "notes": counter_notes_all})
@@ -566,6 +533,87 @@ def _section_at_bar(sections_plan: list[dict], bar: int) -> dict | None:
             return sec
         cursor += sec["bars"]
     return None
+
+
+def _chord_aware_lead(
+    *,
+    progression_chords: list[dict],
+    sections_plan: list[dict],
+    total_bars: int,
+    base_octave_midi: int,
+    seed: int,
+    sec_role_filter: tuple[str, ...] = ("intro", "outro", "buildup", "breakdown"),
+    rest_chance: float = 0.35,
+) -> list[dict]:
+    """Generate a lead melody whose notes follow the underlying chord
+    instead of the key. For each bar, pick notes from the current chord's
+    tones (root, 3, 5, 7) with occasional scale-step passing tones,
+    keeping everything consonant against borrowed chords.
+
+    base_octave_midi: where the melody centers (60=C4, 72=C5, 84=C6).
+                     Notes will land within ±5 semitones of this.
+    rest_chance: per-bar chance the lead rests (creates space).
+    """
+    rng = random.Random(seed)
+    notes: list[dict] = []
+
+    for bar in range(total_bars):
+        sec = _section_at_bar(sections_plan, bar)
+        if sec and sec["role"] in sec_role_filter:
+            continue
+        # Section types that get DENSER lead vs sparser
+        is_chorus = bool(sec and sec["role"].startswith("chorus"))
+        # Per-bar rest probability — choruses get more lead, verses sparser
+        if rng.random() < (rest_chance if is_chorus else rest_chance * 1.4):
+            continue
+
+        chord = progression_chords[bar % len(progression_chords)]
+        # Build the available pitch pool: chord tones + neighbour notes.
+        # voicing is [3rd+12, 5th+12, 7th+12]; bass_root is the chord root.
+        chord_tones_pc = set()
+        for pitch in [chord["bass_root"]] + list(chord["voicing"]):
+            chord_tones_pc.add(int(pitch) % 12)
+
+        # Pick pitches in our target octave that match chord-tone PCs,
+        # plus scale-step neighbours (±1 or ±2 semitones) for melodic motion
+        candidate_pitches: list[int] = []
+        for pc in chord_tones_pc:
+            for octave_off in (-12, 0, 12):
+                target_class = pc
+                # Find the pitch in [base-7, base+7] matching this PC
+                for offset in range(-7, 8):
+                    candidate = base_octave_midi + offset + octave_off
+                    if candidate % 12 == target_class:
+                        candidate_pitches.append(candidate)
+        # Dedup and constrain
+        candidate_pitches = sorted(set(p for p in candidate_pitches
+                                        if base_octave_midi - 7 <= p <= base_octave_midi + 9))
+        if not candidate_pitches:
+            continue
+
+        # Lay 1-3 notes per bar depending on section
+        n_notes = rng.randint(2, 4) if is_chorus else rng.randint(1, 2)
+        # Beat positions on the 8th-note grid (0, 0.5, 1.0, ..., 3.5)
+        beat_choices = [0.0, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+        chosen_beats = sorted(rng.sample(beat_choices,
+                                          min(n_notes, len(beat_choices))))
+        for i, b in enumerate(chosen_beats):
+            # First note of the bar should be a strong chord tone
+            if i == 0:
+                pitch = rng.choice([p for p in candidate_pitches
+                                    if p % 12 in chord_tones_pc])
+            else:
+                pitch = rng.choice(candidate_pitches)
+            # Length: mostly 8th to dotted-quarter, rarely longer
+            length = rng.choice([0.5, 0.75, 1.0, 1.5])
+            velocity = 95 if is_chorus else 80
+            notes.append({
+                "pitch": int(pitch),
+                "start_beats": float(bar * 4 + b),
+                "length_beats": float(length),
+                "velocity": velocity,
+            })
+    return notes
 
 
 HANDLERS = {"compose_synthwave_generative": compose_synthwave_generative}
