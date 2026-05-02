@@ -202,6 +202,13 @@ def _build_track(tspec: TrackSpec, spec: CompositionSpec, total_beats: float,
                     "plugin_id": res["plugin_id"],
                     "param": k, "value": v,
                 })
+            # Special case: an empty Sampler on a drum track is silent —
+            # MIDI hits nothing because no SOUND entries are loaded. Auto-
+            # populate with the bundled factory drum kit so drums actually
+            # play out of the box.
+            if (plug_name.lower() == "sampler"
+                    and tspec.role in ("drums",)):
+                _populate_default_drum_kit(tid, res["plugin_id"], warnings)
         except Exception as e:
             warnings.append(f"plugin_add({plug_name}) on {tspec.name}: {e}")
 
@@ -466,6 +473,33 @@ def _ceil_div(a: float, b: float) -> float:
     if b <= 0:
         return 0.0
     return -(-a // b)
+
+
+def _populate_default_drum_kit(track_id: str, plugin_id: str,
+                                warnings: list[str]) -> None:
+    """Load the bundled Tracktion 808 factory kit into a Sampler plugin.
+
+    Called for any drum-role track whose chain contains a bare 'sampler'
+    plugin — without SOUND entries the sampler is silent and the user
+    hears nothing despite the MIDI notes firing.
+    """
+    try:
+        from .composer import _drum_kit_sounds
+        sounds = _drum_kit_sounds()
+    except Exception as e:
+        warnings.append(f"could not load default drum kit: {e}")
+        return
+    if not sounds:
+        warnings.append("default drum kit returned no sounds — "
+                        "factory presets dir may be missing")
+        return
+    # Find the Sampler plugin we just added and attach the sounds
+    track = STORE.edit.track(track_id)
+    target = next((p for p in track.plugins if p.id == plugin_id), None)
+    if target is None:
+        warnings.append(f"sampler plugin {plugin_id} not found")
+        return
+    target.sounds = sounds
 
 
 def _clip(v: int, lo: int, hi: int) -> int:

@@ -270,24 +270,46 @@ def transcribe(
 # --------------------------------------------------------------------------- #
 
 
-# Heuristic pitch-range thresholds for splitting a transcription into
-# per-role tracks. These are meant for "the song has been demucs'd to
-# 'other' and we got back N notes" type situations — pick out which
-# notes are bass-line versus melody.
+# Pitch ranges for splitting a polyphonic transcription across roles.
+# Designed to be DISJOINT so each transcribed note maps to exactly one
+# role — without this, the same note ends up duplicated on bass + keys
+# + pad + lead, producing a noise-wall mix.
+#
+# Layout (octave numbers in MIDI/scientific notation):
+#   sub_bass   16..35   ↦  C0..D#1   (very low — usually empty)
+#   bass       36..47   ↦  C2..B2    (a single octave for solid bass)
+#   keys       48..71   ↦  C3..B4    (mid range — comping, melody backing)
+#   lead       72..96   ↦  C5..C7    (high — solo / hook melody)
+#
+# Pads + sustained roles are intentionally NOT populated from the
+# transcription. They sound best with chord-tone sustain (auto-filled
+# by the builder from spec.chord_track) rather than dense polyphonic
+# transcription notes that duplicate every other role.
 _ROLE_PITCH_RANGES = {
-    "bass":           (24, 50),     # E1 .. D3
-    "sub_bass":       (16, 36),
-    "lead":           (60, 96),     # C4 .. C7
-    "melody":         (55, 88),     # G3 .. E6
-    "rhythm_guitar":  (40, 67),     # E2 .. G4
-    "keys":           (48, 84),     # C3 .. C6
-    "pad":            (36, 72),     # C2 .. C5
+    "sub_bass":       (16, 35),
+    "bass":           (36, 47),
+    "rhythm_guitar":  (40, 59),     # E2 .. B3 — only used when explicitly mapped
+    "keys":           (48, 71),
+    "melody":         (60, 83),     # alias used by some genre setups
+    "lead":           (72, 96),
 }
+
+# Roles that should never receive transcribed notes — they're meant to
+# sustain chord tones (auto-filled from the chord track) instead.
+_TRANSCRIPTION_EXCLUDED_ROLES = frozenset({
+    "pad",
+    "ambience",
+    "fx",
+})
 
 
 def filter_by_role(notes: list[NoteEvent], role: str) -> list[NoteEvent]:
     """Return only notes whose pitch sits in role's typical range.
-    Unknown roles return all notes."""
+    Excluded roles (pad/ambience/fx) return [] — they're meant for
+    chord-tone sustain, not transcribed notes. Unknown roles return all
+    notes."""
+    if role in _TRANSCRIPTION_EXCLUDED_ROLES:
+        return []
     rng = _ROLE_PITCH_RANGES.get(role)
     if rng is None:
         return list(notes)

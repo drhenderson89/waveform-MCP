@@ -111,28 +111,52 @@ class TestFilterByRole:
     def _make_notes(self) -> list[NoteEvent]:
         return [
             NoteEvent(0, 1, pitch=p) for p in [
-                28,   # bass range
-                36,   # bass range
-                48,   # keys/lead crossover
-                60,   # mid
+                28,   # sub_bass
+                36,   # bass
+                48,   # keys
+                60,   # keys
                 72,   # lead
-                84,   # high lead
+                84,   # lead
             ]
         ]
 
-    def test_bass_filters_to_low_pitches(self):
+    def test_bass_filters_to_one_octave(self):
         n = filter_by_role(self._make_notes(), "bass")
-        assert all(24 <= x.pitch <= 50 for x in n)
-        assert any(x.pitch == 28 for x in n)
+        # Disjoint range: 36..47
+        assert all(36 <= x.pitch <= 47 for x in n)
+        assert any(x.pitch == 36 for x in n)
+
+    def test_keys_takes_middle_octaves(self):
+        n = filter_by_role(self._make_notes(), "keys")
+        assert all(48 <= x.pitch <= 71 for x in n)
+        assert any(x.pitch == 60 for x in n)
 
     def test_lead_filters_to_high_pitches(self):
         n = filter_by_role(self._make_notes(), "lead")
-        assert all(60 <= x.pitch <= 96 for x in n)
+        assert all(72 <= x.pitch <= 96 for x in n)
         assert any(x.pitch == 84 for x in n)
 
+    def test_pad_returns_empty(self):
+        # Pad is in the excluded set — chord-tone sustain handles it
+        assert filter_by_role(self._make_notes(), "pad") == []
+
+    def test_ambience_returns_empty(self):
+        assert filter_by_role(self._make_notes(), "ambience") == []
+
+    def test_disjoint_ranges_no_note_in_two_roles(self):
+        notes = self._make_notes()
+        bass = filter_by_role(notes, "bass")
+        keys = filter_by_role(notes, "keys")
+        lead = filter_by_role(notes, "lead")
+        # Same physical NoteEvent instance can never appear in two role buckets
+        all_ids = [id(n) for n in bass] + [id(n) for n in keys] + [id(n) for n in lead]
+        assert len(all_ids) == len(set(all_ids)), \
+            "a note was assigned to multiple roles"
+
     def test_unknown_role_returns_all(self):
+        # Roles we don't know about pass through unchanged
         all_notes = self._make_notes()
-        assert filter_by_role(all_notes, "fx") == all_notes
+        assert filter_by_role(all_notes, "totally_made_up_role") == all_notes
 
 
 # --------------------------------------------------------------------------- #
@@ -152,9 +176,10 @@ class TestPopulateSpec:
         ]
 
     def test_assigns_by_pitch_range(self):
+        # Disjoint ranges: bass=36..47, keys=48..71, lead=72..96
         notes = [
-            NoteEvent(0, 1, pitch=28),  # bass
-            NoteEvent(1, 1, pitch=36),  # bass
+            NoteEvent(0, 1, pitch=36),  # bass
+            NoteEvent(1, 1, pitch=42),  # bass
             NoteEvent(2, 1, pitch=72),  # lead
             NoteEvent(3, 1, pitch=84),  # lead
         ]

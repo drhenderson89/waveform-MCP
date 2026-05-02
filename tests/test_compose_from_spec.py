@@ -311,6 +311,33 @@ class TestRobustness:
             if os.path.exists(out):
                 os.remove(out)
 
+    def test_drum_track_sampler_auto_loaded_with_sounds(self):
+        """A bare 'sampler' on a drum track must come back populated with
+        SOUND entries — otherwise drums are silent."""
+        spec = _minimal_spec()
+        out = _tmp_path()
+        try:
+            r = compose_from_spec({"spec": spec, "out_path": out})
+            assert r["ok"]
+            drums = next(t for t in STORE.edit.tracks if t.name == "Drums")
+            sampler = next(p for p in drums.plugins if p.type == "sampler")
+            # Either factory presets are reachable (sounds populated) or the
+            # builder logged a warning. We accept both — what we don't
+            # accept is silent failure with no sounds and no warning.
+            if not sampler.sounds:
+                assert any("drum kit" in w.lower() for w in r["warnings"]), \
+                    f"sampler empty AND no warning. warnings={r['warnings']}"
+            else:
+                # Standard factory kit produces ~10 mappings
+                assert len(sampler.sounds) >= 5
+                # Kick (36) and snare (38) must be present so basic patterns play
+                key_notes = {s.get("keyNote") for s in sampler.sounds}
+                assert 36 in key_notes
+                assert 38 in key_notes
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+
     def test_empty_chord_track_produces_empty_pad(self):
         spec = _minimal_spec()
         spec.chord_track = []
