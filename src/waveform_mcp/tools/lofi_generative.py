@@ -176,43 +176,45 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
     if drum_notes:
         midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
 
-    # --- 5. Bass ---
-    # NOTE: plugin name is left unset so it falls back to type="4OSC",
-    # which IS in the calibration table (key "4osc" → -8 dB offset).
-    # Setting a custom name like "Bass" makes calibration miss the
-    # lookup and use the conservative -10 dB unknown default.
+    # --- 5. Bass — REAL multi-sample bass guitar locked to the kick ---
     bass_id = track_tools.track_add({"name": "Bass", "kind": "midi"})["track_id"]
     plugin_tools.plugin_add({"track_id": bass_id, "type": "4OSC"})
-    # 4OSC's default patch produces a quiet bass even at unity fader.
-    # Add a clean +12 dB makeup gain (compress_glue with no compression
-    # — just outputDb makeup). Verified empirically: without this the
-    # bass is ~30 dB below the kick despite a +8 dB fader.
-    from ..model import Plugin as _Plugin
-    from ..model import _id as _gen_id
-    STORE.edit.track(bass_id).plugins.append(_Plugin(
-        id=_gen_id("plg"), type="comp", name="Bass Gain",
-        params={"threshold": 0.0, "ratio": 1.0, "attack": 1.0,
-                "release": 50.0, "knee": 0.0, "outputDb": 12.0, "rms": 0},
-    ))
+    # Try to upgrade to multi-sample bass. If factory samples missing,
+    # we keep 4OSC and add gain compensation (the synth is too thin
+    # without it).
+    using_real_bass = _install_lofi_bass_samples(bass_id)
+    if not using_real_bass:
+        from ..model import Plugin as _Plugin
+        from ..model import _id as _gen_id
+        STORE.edit.track(bass_id).plugins.append(_Plugin(
+            id=_gen_id("plg"), type="comp", name="Bass Gain",
+            params={"threshold": 0.0, "ratio": 1.0, "attack": 1.0,
+                    "release": 50.0, "knee": 0.0, "outputDb": 12.0, "rms": 0},
+        ))
     bass_clip = midi_tools.midi_clip_add({
         "track_id": bass_id, "name": "Bass",
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
-    # Tile the chord progression across bars
-    chord_dur_bars = 1   # one chord per bar
-    bass_roots_full = []
-    for bar in range(total_bars):
-        chord = progression_chords[bar % len(progression_chords)]
-        bass_roots_full.append(chord["bass_root"])
-    bass_r = mel_tools.bassline_generate({
-        "roots": bass_roots_full,
-        "chord_duration_beats": float(chord_dur_bars * 4),
-        "feel": bass_feel,
-        "start_beats": 0.0,
-    })
-    bass_notes_raw = bass_r.get("notes", [])
-    if bass_notes_raw:
-        midi_tools.midi_notes_add({"clip_id": bass_clip, "notes": bass_notes_raw})
+
+    # Lock bass notes to kick onsets — the foundation of any modern
+    # rhythmic groove. Replaces the previous bassline_generate path,
+    # which produced bass figures that didn't share rhythm with the
+    # drum pattern. This is what "meshing" sounds like: kick + bass
+    # hitting together on every kick.
+    bass_notes_locked = _bass_locked_to_kick(
+        drum_notes=drum_notes,
+        progression_chords=progression_chords,
+        total_bars=total_bars,
+        bar_beats=4,
+        # Multi-sample bass natural range = 36-50; chord roots from
+        # progression_generate land at octave-3 (~40-50). 0 offset works.
+        # If the synth fallback is in play, no offset either.
+        bass_octave=0,
+        velocity=95,
+    )
+    if bass_notes_locked:
+        midi_tools.midi_notes_add({"clip_id": bass_clip,
+                                    "notes": bass_notes_locked})
 
     # --- 6. Keys (jazz piano comp from progression voicings) ---
     keys_id = track_tools.track_add({"name": "Keys", "kind": "midi"})["track_id"]
@@ -314,9 +316,13 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
     track_tools.mix_apply_reference({"track_id": drums_id,
                                       "genre": "lofi", "role": "drums",
                                       "offset_db": +2})
+    # Bass: real samples are at unity output level, so the previous
+    # +18 dB hack (compensating for thin 4OSC) isn't needed when
+    # _install_lofi_bass_samples succeeded. Use a moderate +6 to match
+    # the lofi reference balance.
     track_tools.mix_apply_reference({"track_id": bass_id,
                                       "genre": "lofi", "role": "bass",
-                                      "offset_db": +18})  # bass fader hits clamp at +8
+                                      "offset_db": +6 if using_real_bass else +18})
     track_tools.mix_apply_reference({"track_id": keys_id,
                                       "genre": "lofi", "role": "keys",
                                       "offset_db": -8})
@@ -379,6 +385,114 @@ def _section_to_drum_role(role: str, rng: random.Random) -> str:
         "outro": "outro",
     }
     return mapping.get(role, "verse")
+
+
+def _install_lofi_bass_samples(track_id: str) -> bool:
+    """Replace the default 4OSC patch on a Bass track with a multi-
+    sampled bass guitar (4 factory Lofi samples). Returns True on success.
+
+    Mirrors compose_lofi_track's known-good bass sound: 4 Cymatics
+    samples at E2/A2/B2/C3, mapped with narrow ranges so each played
+    note is within ~3 semitones of the nearest sample's natural pitch.
+    Avoids the synth-bass-too-thin problem we hit with bare 4OSC.
+    """
+    base = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
+            / "Factory Loops" / "Lofi Samples")
+    if not base.exists():
+        return False
+    samples = [
+        ("lofi_bass_E.wav",        "Bass E2", 40, 24, 41),
+        ("lofi_bass_A.wav",        "Bass A2", 45, 42, 46),
+        ("lofi_bass_B.wav",        "Bass B2", 47, 47, 47),
+        ("lofi_bass_guitar_C.wav", "Bass C3", 48, 48, 80),
+    ]
+    if not all((base / fn).exists() for fn, *_ in samples):
+        return False
+
+    # Wipe existing (4OSC) plugin and replace with Sampler
+    track = STORE.edit.track(track_id)
+    track.plugins.clear()
+    plugin_tools.plugin_add({
+        "track_id": track_id, "type": "Sampler", "name": "Lofi Bass",
+    })
+    # The auto-drum-kit-load in plugin_add is gated on track name
+    # containing 'drum'/'kit'/'percussion', so a track named 'Bass'
+    # gets a clean empty Sampler — we can fill it directly.
+    sampler = next((p for p in track.plugins
+                     if (p.type or "").lower() == "sampler"), None)
+    if sampler is None:
+        return False
+    sampler.sounds = [
+        {"source": str(base / fn), "name": nm,
+         "keyNote": kn, "minNote": mn, "maxNote": mx,
+         "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1}
+        for fn, nm, kn, mn, mx in samples
+    ]
+    return True
+
+
+def _bass_locked_to_kick(
+    drum_notes: list[dict],
+    progression_chords: list[dict],
+    total_bars: int,
+    bar_beats: int = 4,
+    *,
+    bass_octave: int = 0,   # 0 = play chord root as-is
+    velocity: int = 95,
+) -> list[dict]:
+    """Place bass notes on every KICK onset, at the chord root for the
+    bar that kick falls in. This is the foundational rhythm-section
+    interaction that makes a song groove — kick + bass hitting together.
+
+    A note sustains until the next kick or until the chord changes,
+    whichever comes first, so holds through bar transitions sound
+    naturally. We add a tiny LAY_BACK (4 ms) so the bass sits half a
+    hair behind the kick — pro bassist feel.
+
+    Args:
+      drum_notes: output of drum_pattern (list of {pitch, start_beats, ...})
+      progression_chords: list of chord descriptors from compose_lofi_generative
+      total_bars: total song length in bars
+      bar_beats: 4 in 4/4
+      bass_octave: 0 keeps the progression root; -12 drops an octave
+      velocity: bass note velocity (95 = strong but not slamming)
+    """
+    LAY_BACK = 0.004  # tiny feel
+    KICK_PITCH = 36
+
+    # Extract kick onsets
+    kick_beats = sorted(
+        set(round(float(n["start_beats"]) * 16) / 16  # snap to 64th
+            for n in drum_notes if int(n["pitch"]) == KICK_PITCH)
+    )
+    if not kick_beats:
+        return []
+
+    total_beats = float(total_bars * bar_beats)
+    bass_notes: list[dict] = []
+    for i, kb in enumerate(kick_beats):
+        if kb >= total_beats:
+            break
+        # Which chord at this beat?
+        bar = int(kb // bar_beats)
+        chord = progression_chords[bar % len(progression_chords)]
+        root = int(chord["bass_root"]) + bass_octave
+
+        # Length: until next kick, or until chord changes, whichever is
+        # sooner. Avoids muddy sustain across chord changes.
+        next_kick = kick_beats[i + 1] if i + 1 < len(kick_beats) else total_beats
+        next_chord_beat = (bar + 1) * bar_beats
+        end_beat = min(next_kick, next_chord_beat, total_beats)
+        length = max(0.25, end_beat - kb)
+
+        bass_notes.append({
+            "pitch": int(root),
+            "start_beats": float(kb + LAY_BACK),
+            "length_beats": float(length),
+            "velocity": int(velocity),
+        })
+
+    return bass_notes
 
 
 def _populate_drum_kit(track_id: str) -> bool:
