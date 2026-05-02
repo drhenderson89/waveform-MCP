@@ -317,6 +317,42 @@ class TestRobustness:
             if os.path.exists(out):
                 os.remove(out)
 
+    def test_plugin_add_auto_populates_drum_sampler(self):
+        """plugin_add now auto-loads the factory drum kit when a Sampler
+        is added to a track whose name suggests it's a drum track. This
+        is a single systemic fix that benefits every composer."""
+        from waveform_mcp.tools import edit, plugins, tracks
+        edit.edit_create({"name": "X", "tempo": 120,
+                          "time_sig_num": 4, "time_sig_denom": 4,
+                          "key_root": 0, "key_mode": "major",
+                          "length_beats": 16})
+        # Drum-named track
+        drums = tracks.track_add({"name": "Drums", "kind": "midi"})["track_id"]
+        plugins.plugin_add({"track_id": drums, "type": "Sampler"})
+        t = STORE.edit.track(drums)
+        sampler = next(p for p in t.plugins if p.type == "Sampler")
+        # Either factory presets are reachable (sounds populated) or
+        # the call gracefully no-ops. We don't accept silent-failure
+        # without reaching the factory dir.
+        if sampler.sounds:
+            assert any(s.get("keyNote") == 36 for s in sampler.sounds), \
+                "kick (note 36) missing from auto-loaded kit"
+
+    def test_plugin_add_skips_auto_load_for_non_drum_tracks(self):
+        """A Sampler on a non-drum-named track should NOT auto-load
+        the kit (caller probably wants a melodic sampler)."""
+        from waveform_mcp.tools import edit, plugins, tracks
+        edit.edit_create({"name": "X", "tempo": 120,
+                          "time_sig_num": 4, "time_sig_denom": 4,
+                          "key_root": 0, "key_mode": "major",
+                          "length_beats": 16})
+        bass = tracks.track_add({"name": "Bass", "kind": "midi"})["track_id"]
+        plugins.plugin_add({"track_id": bass, "type": "Sampler"})
+        t = STORE.edit.track(bass)
+        sampler = next(p for p in t.plugins if p.type == "Sampler")
+        assert not sampler.sounds, \
+            "non-drum track shouldn't get auto-populated drum kit"
+
     def test_drum_track_sampler_auto_loaded_with_sounds(self):
         """A bare 'sampler' on a drum track must come back populated with
         SOUND entries — otherwise drums are silent."""

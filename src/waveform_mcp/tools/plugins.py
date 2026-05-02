@@ -325,9 +325,60 @@ def plugin_add(
     else:
         p = Plugin(id=_id("plg"), type=type, name=name or type, preset_path=preset_path)
     t.plugins.append(p)
+
+    # Auto-populate Sampler with the factory drum kit when added to a
+    # track that's clearly a drum track (name contains "drum" / "drums"
+    # / "kit"). Otherwise the Sampler would have zero <SOUND> entries
+    # and the drum MIDI hits would land on nothing — silent drums.
+    # This is the single systemic fix: every composer (compose_from_spec,
+    # compose_lofi_track, compose_lofi_generative, compose_synthwave,
+    # compose_djent, ...) gets working drums out of the box.
+    if (p.type or "").lower() == "sampler":
+        track_name_lower = (t.name or "").lower()
+        if any(k in track_name_lower for k in ("drum", "kit", "percussion")):
+            _auto_populate_drum_kit(p)
+
     return {"track_id": track_id, "plugin_id": p.id,
             "resolved_as": "vst" if vst_match else "builtin",
             "filename": vst_match["file"] if vst_match else None}
+
+
+def _auto_populate_drum_kit(sampler_plugin) -> None:
+    """Attach factory 808 sounds to a Sampler plugin. Best-effort — if
+    factory presets dir is missing, leaves the sampler empty (no error).
+    Idempotent: skips if `sampler_plugin.sounds` is already populated.
+    """
+    if getattr(sampler_plugin, "sounds", None):
+        return  # caller already loaded a kit
+    from pathlib import Path
+    base = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
+            / "Factory Presets" / "Drum Sampler")
+    if not base.exists():
+        return
+    mappings = [
+        (36, "808 Bass Drum 115.flac",   "Kick"),
+        (38, "808 Snare Drum 253.flac",  "Snare"),
+        (39, "808 Hand Clap 7.flac",     "Clap"),
+        (42, "808 Hihat Closed 1.flac",  "Closed Hat"),
+        (46, "808 Hihat Open 2.flac",    "Open Hat"),
+        (49, "808 Cymbal 27.flac",       "Crash"),
+        (45, "808 Tom Low 44.flac",      "Low Tom"),
+        (48, "808 Tom Mid 44.flac",      "Mid Tom"),
+        (50, "808 Tom Hi 1.flac",        "Hi Tom"),
+        (37, "808 Rim Shot 1.flac",      "Rimshot"),
+    ]
+    sounds = []
+    for note, fname, snd_name in mappings:
+        path = base / fname
+        if not path.exists():
+            continue
+        sounds.append({
+            "source": str(path), "name": snd_name,
+            "keyNote": note, "minNote": note, "maxNote": note,
+            "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1,
+        })
+    if sounds:
+        sampler_plugin.sounds = sounds
 
 
 @op("plugin_set_param", intent_template="Set {param} on {plugin_id}")

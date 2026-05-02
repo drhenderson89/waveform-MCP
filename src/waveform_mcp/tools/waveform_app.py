@@ -208,32 +208,23 @@ def waveform_launch(args: dict) -> dict:
             "dialog_title": state["modal_dialog"],
         }
 
-    # Case 2: file is already loaded as a tab. Two sub-cases:
+    # Case 2: file is already loaded as a tab.
     #
-    #   (a) The tab is a *native* project edit (an edit Waveform itself
-    #       saves into the .tracktion project). Revert-to-saved-state
-    #       correctly re-reads from the .tracktionedit file.
+    # Default behavior is REVERT — focus the tab and trigger File →
+    # Revert to saved state, which reloads from disk. This is the
+    # correct path when iterating on the same project: the file lives
+    # inside the project, revert reads it, you hear the new version.
     #
-    #   (b) The tab is an *imported* edit (came in via drag-drop, lives
-    #       inside the project's metadata). Waveform keeps an in-project
-    #       copy and "revert to saved state" pulls from THAT, not the
-    #       .tracktionedit on disk. So if the caller just rewrote the
-    #       file, revert won't pick up the changes.
-    #
-    # We can't cheaply distinguish the two cases via UIA, so we always
-    # do the safe thing: close the existing tab, then drag-drop the
-    # file fresh. Drag-drop always imports from disk, so the new
-    # content guaranteed reaches Waveform.
-    #
-    # Caller can pass `prefer_revert=True` to use the cheaper revert
-    # path when they know the edit is project-native and unchanged on
-    # disk. Default is False (correctness over speed).
+    # Caller can pass `force_reimport=True` to instead close the tab
+    # and drag-drop the file fresh. Reserve this for cases where you
+    # know the in-project metadata is corrupt or out of sync.
     if state.get("file_already_loaded"):
         existing_tab = state["file_already_loaded"]
-        prefer_revert = bool(args.get("prefer_revert", False))
+        force_reimport = bool(args.get("force_reimport", False))
 
-        if prefer_revert:
+        if not force_reimport:
             focus_res = _focus_tab(existing_tab)
+            time.sleep(0.3)
             try:
                 from .waveform_workflows import waveform_revert_to_saved
                 r = waveform_revert_to_saved({})
@@ -251,18 +242,13 @@ def waveform_launch(args: dict) -> dict:
                 **({"revert_error": revert_err} if revert_err else {}),
             }
 
-        # Default: close + re-import to guarantee disk content reaches Waveform
+        # Force-reimport path (rare): close + drag-drop fresh
         focus_res = _focus_tab(existing_tab)
         time.sleep(0.3)
         close_ok = _close_active_tab()
         time.sleep(0.5)
-        # Now do the drag-drop (case 4 logic, intentional fall-through)
         post_view = _detect_active_view()
         if post_view != "edit":
-            # No edits remaining — try to land in welcome / projects;
-            # drag-drop won't work from there. Cold-start workaround:
-            # if we have no edit view, switch to any remaining edit
-            # tab. Otherwise instruct caller.
             remaining = _list_tab_titles()
             if remaining:
                 _focus_tab(remaining[0])

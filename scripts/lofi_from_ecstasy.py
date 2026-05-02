@@ -29,6 +29,7 @@ result = compose_lofi_generative({
     "out_path": OUT,
     "seed": 23,                          # change for different songs
     "key_root": "F", "key_mode": "major",
+    "target_seconds": 194,               # 3:14 — match Ecstasy's pacing
     "chord_progression": ECSTASY_PROGRESSION,
 })
 print("ok=", result.get("ok"))

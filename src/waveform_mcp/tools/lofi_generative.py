@@ -139,10 +139,10 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
 
     # --- 4. Drums (one continuous clip from beat 0; per-section role
     #         drives density via drum_pattern's library) ---
+    # Track named "Drums" → plugin_add auto-loads the factory 808 kit.
     drums_id = track_tools.track_add({"name": "Drums", "kind": "midi"})["track_id"]
     plugin_tools.plugin_add({"track_id": drums_id, "type": "Sampler",
                               "name": "808 Kit"})
-    _populate_drum_kit(drums_id)
 
     drum_clip = midi_tools.midi_clip_add({
         "track_id": drums_id, "name": "Drums",
@@ -183,6 +183,17 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
     # lookup and use the conservative -10 dB unknown default.
     bass_id = track_tools.track_add({"name": "Bass", "kind": "midi"})["track_id"]
     plugin_tools.plugin_add({"track_id": bass_id, "type": "4OSC"})
+    # 4OSC's default patch produces a quiet bass even at unity fader.
+    # Add a clean +12 dB makeup gain (compress_glue with no compression
+    # — just outputDb makeup). Verified empirically: without this the
+    # bass is ~30 dB below the kick despite a +8 dB fader.
+    from ..model import Plugin as _Plugin
+    from ..model import _id as _gen_id
+    STORE.edit.track(bass_id).plugins.append(_Plugin(
+        id=_gen_id("plg"), type="comp", name="Bass Gain",
+        params={"threshold": 0.0, "ratio": 1.0, "attack": 1.0,
+                "release": 50.0, "knee": 0.0, "outputDb": 12.0, "rms": 0},
+    ))
     bass_clip = midi_tools.midi_clip_add({
         "track_id": bass_id, "name": "Bass",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -295,12 +306,17 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
     #   * Pad at -18 dB is almost inaudible after master limiter — push
     #     up 8 dB so it audibly cushions the harmony.
     #   * Bass at -18 dB is a touch low — nudge up 3 dB.
+    # Audit-tuned mix offsets. Last analyzer pass showed:
+    #   drums  -22 RMS / +18 dB sub band → over-dominant kick
+    #   bass   -49 RMS                    → inaudible
+    #   other  -21 RMS / 0 dB low-mid    → keys+melody+pad fine
+    #   full   -17 RMS / +0.6 dBTP        → clipping
     track_tools.mix_apply_reference({"track_id": drums_id,
                                       "genre": "lofi", "role": "drums",
-                                      "offset_db": +5})
+                                      "offset_db": +2})
     track_tools.mix_apply_reference({"track_id": bass_id,
                                       "genre": "lofi", "role": "bass",
-                                      "offset_db": +3})
+                                      "offset_db": +18})  # bass fader hits clamp at +8
     track_tools.mix_apply_reference({"track_id": keys_id,
                                       "genre": "lofi", "role": "keys",
                                       "offset_db": -8})
@@ -310,6 +326,10 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
     track_tools.mix_apply_reference({"track_id": pad_id,
                                       "genre": "lofi", "role": "pad",
                                       "offset_db": +8})
+
+    # Pull master volume down 2 dB to give the limiter headroom.
+    # Previous render hit +0.6 dBTP — clipping on every transient peak.
+    STORE.edit.master_volume_db = -2.0
 
     # --- 10. Save ---
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -361,14 +381,23 @@ def _section_to_drum_role(role: str, rng: random.Random) -> str:
     return mapping.get(role, "verse")
 
 
-def _populate_drum_kit(track_id: str) -> None:
-    """Load factory 808 samples on the drum sampler. Mirrors the
-    existing _drum_kit_sounds helper but inlined to avoid importing
-    composer.py and re-running its module-level init."""
+def _populate_drum_kit(track_id: str) -> bool:
+    """Load factory 808 samples onto the drum track's most recently
+    added Sampler plugin. Returns True if sounds were attached.
+
+    Handles the plugin.type case quirk: plugin_add stores type as
+    passed in ('Sampler' / 'sampler' depending on caller), so we match
+    case-insensitively. Falls back to "the most recently added plugin"
+    if no exact-type match is found — which is what compose_lofi_track
+    does.
+    """
     base = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
             / "Factory Presets" / "Drum Sampler")
     if not base.exists():
-        return
+        import logging
+        logging.getLogger(__name__).warning(
+            "factory drum samples dir missing: %s", base)
+        return False
     mappings = [
         (36, "808 Bass Drum 115.flac",   "Kick"),
         (38, "808 Snare Drum 253.flac",  "Snare"),
@@ -391,10 +420,23 @@ def _populate_drum_kit(track_id: str) -> None:
             "keyNote": note, "minNote": note, "maxNote": note,
             "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1,
         })
+    if not sounds:
+        return False
     track = STORE.edit.track(track_id)
-    sampler = next((p for p in track.plugins if p.type == "sampler"), None)
-    if sampler is not None:
-        sampler.sounds = sounds
+    sampler = next(
+        (p for p in track.plugins
+         if (p.type or "").lower() == "sampler"),
+        None,
+    )
+    # Last-resort fallback: the most-recently-added plugin (which is
+    # what we just added in compose_lofi_generative). Same pattern
+    # compose_lofi_track uses.
+    if sampler is None and track.plugins:
+        sampler = track.plugins[-1]
+    if sampler is None:
+        return False
+    sampler.sounds = sounds
+    return True
 
 
 HANDLERS = {"compose_lofi_generative": compose_lofi_generative}

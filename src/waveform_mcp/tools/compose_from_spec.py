@@ -202,13 +202,10 @@ def _build_track(tspec: TrackSpec, spec: CompositionSpec, total_beats: float,
                     "plugin_id": res["plugin_id"],
                     "param": k, "value": v,
                 })
-            # Special case: an empty Sampler on a drum track is silent —
-            # MIDI hits nothing because no SOUND entries are loaded. Auto-
-            # populate with the bundled factory drum kit so drums actually
-            # play out of the box.
-            if (plug_name.lower() == "sampler"
-                    and tspec.role in ("drums",)):
-                _populate_default_drum_kit(tid, res["plugin_id"], warnings)
+            # Note: empty Sampler plugins on drum-named tracks now get
+            # auto-populated by plugin_add itself (it inspects the
+            # parent track's name). The previous explicit fallback is
+            # no longer needed here.
         except Exception as e:
             warnings.append(f"plugin_add({plug_name}) on {tspec.name}: {e}")
 
