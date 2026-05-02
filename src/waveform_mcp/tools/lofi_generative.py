@@ -262,7 +262,18 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
                 "register_octave": 5,
                 "seed": seed * 53 + sec_idx,
             })
-            for n in mel.get("notes", []):
+            # Quantize melody to 8th-note grid + collapse same-pitch
+            # collisions. melody_generate accumulates positions
+            # sequentially with 12 ms humanize per note; cumulative
+            # drift puts notes off-grid relative to drums. Snapping to
+            # 0.5-beat grid forces every melody onset to land on the
+            # same beat positions the drums and bass are landing on.
+            section_notes_quantized = _quantize_melody_to_grid(
+                mel.get("notes", []),
+                grid_beats=0.5,
+                min_length_beats=0.25,
+            )
+            for n in section_notes_quantized:
                 melody_notes_all.append({
                     "pitch": int(n["pitch"]),
                     "start_beats": float(n["start_beats"]) + cursor_bar * 4,
@@ -429,6 +440,53 @@ def _install_lofi_bass_samples(track_id: str) -> bool:
         for fn, nm, kn, mn, mx in samples
     ]
     return True
+
+
+def _quantize_melody_to_grid(
+    notes: list[dict], *,
+    grid_beats: float = 0.5,
+    min_length_beats: float = 0.25,
+) -> list[dict]:
+    """Snap melody onsets to a beat grid and clean up collisions.
+
+    melody_generate's output drifts off-grid because it accumulates
+    sequential durations + 12 ms humanize per note. Over many notes,
+    accumulated jitter puts melody onsets between the drum/bass beats.
+    Snapping to an 8th-note grid (0.5 beats default) puts every melody
+    note on the same time positions the drums hit, which is what
+    "rhythmically locked" actually means.
+
+    After snapping, multiple notes that collapsed to the same grid
+    position are deduped — keep the loudest, drop the rest.
+    Lengths are also snapped to grid; notes shorter than
+    `min_length_beats` are stretched to that floor for audibility.
+    """
+    if not notes or grid_beats <= 0:
+        return list(notes)
+
+    snapped: list[dict] = []
+    for n in notes:
+        start = float(n.get("start_beats", 0.0))
+        length = float(n.get("length_beats", grid_beats))
+        # Snap start
+        snapped_start = round(start / grid_beats) * grid_beats
+        # Snap length to grid; enforce floor
+        snapped_len = max(min_length_beats,
+                          round(length / grid_beats) * grid_beats or grid_beats)
+        snapped.append({
+            "pitch": int(n.get("pitch", 60)),
+            "start_beats": float(snapped_start),
+            "length_beats": float(snapped_len),
+            "velocity": int(n.get("velocity", 80)),
+        })
+
+    # Dedupe: at each unique start_beat, keep only the highest-velocity note
+    by_start: dict[float, dict] = {}
+    for n in snapped:
+        key = round(n["start_beats"], 4)
+        if key not in by_start or n["velocity"] > by_start[key]["velocity"]:
+            by_start[key] = n
+    return sorted(by_start.values(), key=lambda x: x["start_beats"])
 
 
 def _bass_locked_to_kick(
