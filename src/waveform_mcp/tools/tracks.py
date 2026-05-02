@@ -321,19 +321,48 @@ def mix_apply_reference(
     role: str,
     pan: float | None = None,
     offset_db: float = 0.0,
+    *,
+    calibrate: bool = True,
 ) -> dict:
     """Look up the (genre, role) reference dB and apply it as the track's
     static volume_db. Optional pan & offset_db for fine adjustments.
+
+    When `calibrate=True` (default), the track's plugin chain is consulted
+    via `mix_calibration.calibrated_fader_db` to compensate for the chain's
+    output level. This means a sforzando-fed guitar with amp sim and a
+    sample-based drum sampler can both target "-8 dB role level" and the
+    audible result will actually be balanced — without this, the role
+    target was applied verbatim and quieter chains (sforzando) ended up
+    20+ dB below louder ones (samplers).
+
+    Pass `calibrate=False` to get the legacy behaviour (raw role lookup).
     """
     from .. import music_theory_data as data
+    from .. import mix_calibration as mc
+
     t = edit.track(track_id)
     ref = data.mix_level_for(genre, role)
-    t.volume_db = ref + float(offset_db)
+
+    if calibrate:
+        plugin_names = [getattr(p, "name", None) or getattr(p, "type", None)
+                        for p in (t.plugins or [])]
+        applied = mc.calibrated_fader_db(
+            target_db=ref, plugin_names=plugin_names, extra_offset_db=float(offset_db),
+        )
+        chain_off = mc.chain_offset_db(plugin_names)
+    else:
+        applied = ref + float(offset_db)
+        chain_off = 0.0
+        plugin_names = []
+
+    t.volume_db = applied
     if pan is not None:
         t.pan = float(pan)
     return {
         "track_id": track_id, "genre": genre, "role": role,
-        "reference_db": ref, "applied_db": t.volume_db,
+        "reference_db": ref, "chain_offset_db": chain_off,
+        "applied_db": t.volume_db, "calibrated": calibrate,
+        "plugin_chain": plugin_names,
     }
 
 
