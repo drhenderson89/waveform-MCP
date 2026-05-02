@@ -295,13 +295,12 @@ _ROLE_PITCH_RANGES = {
 }
 
 # Roles that should never receive transcribed notes — they're meant to
-# sustain or comp chord tones (auto-filled from the chord track).
-# BasicPitch over-transcribes harmonic content (every detectable pitched
-# event becomes a note), so dumping that onto keys/pad/etc. produces a
-# 1500+ note cloud that sounds nothing like a real keys part.
+# sustain chord tones (auto-filled from the chord track) instead.
+# Keys IS included in transcription: BasicPitch's middle-octave content
+# is musically useful as a comping part, just needs staccato shortening
+# to avoid blurring (handled in import_song.py).
 _TRANSCRIPTION_EXCLUDED_ROLES = frozenset({
     "pad",
-    "keys",
     "ambience",
     "fx",
 })

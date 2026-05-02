@@ -259,8 +259,7 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                     # collapse overlapping micro-notes.
                     from ..reference_adapter import (
                         _quantize_notes, _dedupe_overlapping,
-                        _clean_dense_role,
-                        _derive_drum_pattern_from_onsets,
+                        _staccato, _basic_backbeat_pattern,
                     )
                     from ..composition_spec import DrumPatternSpec
 
@@ -271,35 +270,49 @@ def analyze_to_spec(args: dict[str, Any]) -> dict[str, Any]:
                         spec.tracks, quantized, overwrite=True,
                     )
 
-                    # Derive drum pattern from where the song actually
-                    # hits — bass + lead onsets — not the static backbeat
-                    # baked into the spec. Keys is now chord-tone comp
-                    # (auto-filled in builder), so we don't reference it
-                    # here.
-                    bass_notes = next((t.notes for t in spec.tracks
-                                       if t.role == "bass"), [])
-                    lead_notes = next((t.notes for t in spec.tracks
-                                       if t.role in ("lead", "melody")), [])
-                    derived_drum_notes = _derive_drum_pattern_from_onsets(
-                        bass_notes=bass_notes, lead_notes=lead_notes,
-                        keys_notes=[],
-                        bar_beats=spec.time_sig_num,
-                    )
+                    # Keys cleanup: shorten each note for staccato feel.
+                    # Was 'mud', now 'each note has a gap before the next'.
+                    keys_track = next((t for t in spec.tracks
+                                       if t.role == "keys"), None)
+                    keys_count = 0
+                    if keys_track and keys_track.notes:
+                        keys_track.notes = _staccato(
+                            keys_track.notes,
+                            max_length_beats=0.25,  # cap at 16th note
+                            ratio=0.55,             # keep 55% of original
+                        )
+                        keys_count = len(keys_track.notes)
+
+                    # Drums: simple, conservative backbeat. Histogram-
+                    # derived patterns gave near-uniform results from
+                    # BasicPitch's sustained-note phantom onsets, which
+                    # produced machine-gun kicks. Static backbeat just
+                    # works.
+                    drum_notes = _basic_backbeat_pattern(spec.time_sig_num)
                     drums_track = next((t for t in spec.tracks
                                         if t.role == "drums"), None)
-                    if drums_track and derived_drum_notes:
+                    if drums_track:
                         drums_track.drum_pattern = DrumPatternSpec(
-                            notes=derived_drum_notes,
+                            notes=drum_notes,
                             loop_length_beats=float(spec.time_sig_num),
                         )
+
+                    # Mix balance: keys and lead carry the song's
+                    # melodic content for the cover, so push them up
+                    # over the genre-default mix. Without this, lead
+                    # tends to drown under the pad and keys.
+                    for t in spec.tracks:
+                        if t.role in ("keys", "lead", "melody"):
+                            t.mix_offset_db = (t.mix_offset_db or 0.0) + 6.0
 
                     transcription_info = {
                         "used": True, "note_count_raw": len(tr.notes),
                         "note_count_quantized": len(quantized),
-                        "drum_pattern_derived_from_onsets": True,
-                        "drum_hits": len(derived_drum_notes),
                         "per_role": counts,
-                        "keys_via_chord_comp": True,
+                        "keys_staccato_count": keys_count,
+                        "drum_pattern": "static_backbeat",
+                        "drum_hits": len(drum_notes),
+                        "keys_lead_boost_db": 6.0,
                         "grid": "16th",
                     }
                     spec.provenance["basic_pitch"] = transcription_info

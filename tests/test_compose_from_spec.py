@@ -125,7 +125,10 @@ class TestBasicBuild:
 
 
 class TestTrackContent:
-    def test_drum_section_clip_count_matches_sections(self):
+    def test_drums_use_single_continuous_clip(self):
+        # Drums are now laid as ONE clip across the whole song so they
+        # stay phase-locked — section-level clips drift relative to the
+        # song's actual bar grid because of bar-snap rounding.
         spec = _minimal_spec()
         spec.sections = [
             SectionSpec(type="intro", start_beat=0, length_beats=16),
@@ -137,7 +140,10 @@ class TestTrackContent:
             r = compose_from_spec({"spec": spec, "out_path": out})
             assert r["ok"]
             drums = next(t for t in STORE.edit.tracks if t.name == "Drums")
-            assert len(drums.clips) == 3  # one per section
+            # Single continuous clip, not per-section
+            assert len(drums.clips) == 1
+            # Clip covers the full song
+            assert drums.clips[0].length_beats >= 60.0
         finally:
             if os.path.exists(out):
                 os.remove(out)

@@ -290,61 +290,94 @@ def _build_track(tspec: TrackSpec, spec: CompositionSpec, total_beats: float,
     if tspec.drum_pattern is not None:
         _lay_drum_pattern(tid, tspec.drum_pattern, spec.sections, total_beats, warnings)
     elif tspec.notes:
+        # Tracks with explicit notes (bass, lead, keys post-transcription)
+        # use them directly.
         _lay_notes(tid, tspec.notes, total_beats, warnings)
     elif tspec.role == "pad" and spec.chord_track:
-        # Pads sustain chord tones across the full chord duration
+        # Pads sustain chord tones — only role that auto-fills from
+        # the chord track.
         _lay_chord_sustain(tid, spec.chord_track, octave=4,
                            warnings=warnings, rhythm="sustain")
-    elif tspec.role == "keys" and spec.chord_track:
-        # Keys comp with a quarter-note pulse — same notes as pad but
-        # re-articulated each beat so it sits in the rhythmic pocket
-        # instead of droning. Uses a higher octave to sit above bass.
-        _lay_chord_sustain(tid, spec.chord_track, octave=5,
-                           warnings=warnings, rhythm="quarter")
     return tid
 
 
 def _lay_drum_pattern(track_id: str, pat: DrumPatternSpec,
                       sections: list[SectionSpec], total_beats: float,
                       warnings: list[str]) -> None:
-    """Lay one MIDI clip per section, looping the drum pattern through.
-    Section variants override the loop notes for that section."""
-    if not sections:
-        # Single clip covering the whole edit
-        sections = [SectionSpec(type="verse", start_beat=0,
-                                length_beats=total_beats, density=0.7)]
+    """Lay drums as ONE continuous clip from beat 0 → end of song.
 
-    sorted_sections = sorted(sections, key=lambda s: s.start_beat)
-    for idx, sec in enumerate(sorted_sections):
-        notes_for_section = pat.section_variants.get(idx, pat.notes)
-        if not notes_for_section:
-            continue
-        try:
-            clip = midi_tools.midi_clip_add({
-                "track_id": track_id,
-                "start_beats": float(sec.start_beat),
-                "length_beats": float(sec.length_beats),
-                "name": f"Drums {sec.type}",
-            })["clip_id"]
-        except Exception as e:
-            warnings.append(f"midi_clip_add on drums for section {idx}: {e}")
+    Per-section drum clips were producing "off-tempo" feel because each
+    section's snapped start_beat was a small fraction off from the
+    song's actual musical bar lines. Phase errors compound across
+    sections. A single continuous clip from beat 0 keeps drums locked
+    to a single tempo grid throughout — same musical alignment as a
+    real drummer playing through the whole song.
+
+    Section variants are still honored: where a section index has
+    overrides, those notes replace the default for the section's beat
+    range within the single clip.
+    """
+    if not pat.notes and not pat.section_variants:
+        return
+
+    try:
+        clip = midi_tools.midi_clip_add({
+            "track_id": track_id,
+            "start_beats": 0.0,
+            "length_beats": float(total_beats),
+            "name": "Drums",
+        })["clip_id"]
+    except Exception as e:
+        warnings.append(f"midi_clip_add on drums (continuous): {e}")
+        return
+
+    # Build a sorted section list for variant lookup
+    sorted_sections = sorted(sections, key=lambda s: s.start_beat) if sections else []
+
+    def section_for(beat: float) -> int | None:
+        for idx, s in enumerate(sorted_sections):
+            if s.start_beat <= beat < s.start_beat + s.length_beats:
+                return idx
+        return None
+
+    midi_notes: list[dict] = []
+    n_iters = int(_ceil_div(total_beats, pat.loop_length_beats))
+    for k in range(n_iters):
+        offset = k * pat.loop_length_beats
+        if offset >= total_beats:
+            break
+
+        # Variant lookup: which section is this iteration's start in?
+        sec_idx = section_for(offset)
+        notes_for_iter = (pat.section_variants.get(sec_idx, pat.notes)
+                          if sec_idx is not None else pat.notes)
+        if not notes_for_iter:
             continue
 
-        looped = _loop_pattern_across(notes_for_section, pat.loop_length_beats,
-                                      sec.length_beats)
-        # Density-based velocity scaling: dim drums in low-density sections
-        vel_scale = 0.6 + 0.4 * float(sec.density)
-        midi_notes = [
-            {"pitch": int(n.pitch),
-             "start_beats": float(n.start_beat),
-             "length_beats": float(n.length_beats),
-             "velocity": _clip(int(n.velocity * vel_scale), 1, 127)}
-            for n in looped
-        ]
+        # Section density modulates velocity — quieter intros, louder choruses
+        vel_scale = 1.0
+        if sec_idx is not None and sec_idx < len(sorted_sections):
+            vel_scale = 0.6 + 0.4 * float(sorted_sections[sec_idx].density)
+
+        for n in notes_for_iter:
+            start = offset + n.start_beat
+            if start >= total_beats:
+                continue
+            length = min(n.length_beats, total_beats - start)
+            if length <= 0:
+                continue
+            midi_notes.append({
+                "pitch": int(n.pitch),
+                "start_beats": float(start),
+                "length_beats": float(length),
+                "velocity": _clip(int(n.velocity * vel_scale), 1, 127),
+            })
+
+    if midi_notes:
         try:
             midi_tools.midi_notes_add({"clip_id": clip, "notes": midi_notes})
         except Exception as e:
-            warnings.append(f"midi_notes_add on drums for section {idx}: {e}")
+            warnings.append(f"midi_notes_add on drums (continuous): {e}")
 
 
 def _lay_notes(track_id: str, notes: list[NoteEvent], total_beats: float,

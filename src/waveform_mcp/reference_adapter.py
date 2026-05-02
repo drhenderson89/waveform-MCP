@@ -502,6 +502,58 @@ def _clean_dense_role(notes: list[NoteEvent], *,
     return out
 
 
+def _staccato(notes: list[NoteEvent], *, max_length_beats: float = 0.25,
+              ratio: float = 0.6) -> list[NoteEvent]:
+    """Shorten every note's length so successive notes have a clear
+    gap between them, giving a punchy / detached articulation.
+
+    `max_length_beats` is a hard cap on any single note's length.
+    `ratio` is the per-note shortening factor (0.6 = keep 60% of the
+    original length, drop 40% as silence). Combined: shorten to
+    `length * ratio`, then clamp to max_length_beats.
+
+    Returns a new list; doesn't mutate input.
+    """
+    out: list[NoteEvent] = []
+    for n in notes:
+        new_len = min(max_length_beats, max(0.05, n.length_beats * ratio))
+        out.append(NoteEvent(
+            start_beat=n.start_beat,
+            length_beats=new_len,
+            pitch=n.pitch, velocity=n.velocity, channel=n.channel,
+        ))
+    return out
+
+
+def _basic_backbeat_pattern(bar_beats: int = 4) -> list[NoteEvent]:
+    """A vanilla rock/pop backbeat — the safest pattern for any tempo.
+
+    Returns a 1-bar drum loop:
+      * Kick on beat 1
+      * Snare on every other beat starting at beat 2
+      * Closed hat on every beat (quarter notes)
+
+    Deliberately conservative — half as dense as my old pattern. At
+    143 BPM (Ecstasy), 8th-note hats sounded busy / off-tempo against
+    the song's actual chill feel; quarter-note hats sit better.
+    """
+    notes: list[NoteEvent] = [
+        NoteEvent(start_beat=0.0, length_beats=0.25, pitch=36, velocity=110),
+    ]
+    for beat_idx in range(1, bar_beats, 2):
+        notes.append(NoteEvent(
+            start_beat=float(beat_idx), length_beats=0.25,
+            pitch=38, velocity=100,
+        ))
+    for beat_idx in range(bar_beats):
+        notes.append(NoteEvent(
+            start_beat=float(beat_idx), length_beats=0.125,
+            pitch=42, velocity=70 if beat_idx % 2 == 0 else 60,
+        ))
+    notes.sort(key=lambda n: (n.start_beat, n.pitch))
+    return notes
+
+
 def _derive_drum_pattern_from_onsets(
     *,
     bass_notes: list[NoteEvent],
