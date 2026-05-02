@@ -208,31 +208,71 @@ def waveform_launch(args: dict) -> dict:
             "dialog_title": state["modal_dialog"],
         }
 
-    # Case 2: file is already loaded — focus its tab and revert from
-    # disk (we may have just rewritten the file underneath it). Revert
-    # is cheap and idempotent: if the on-disk file matches what's in
-    # memory it's a no-op.
+    # Case 2: file is already loaded as a tab. Two sub-cases:
+    #
+    #   (a) The tab is a *native* project edit (an edit Waveform itself
+    #       saves into the .tracktion project). Revert-to-saved-state
+    #       correctly re-reads from the .tracktionedit file.
+    #
+    #   (b) The tab is an *imported* edit (came in via drag-drop, lives
+    #       inside the project's metadata). Waveform keeps an in-project
+    #       copy and "revert to saved state" pulls from THAT, not the
+    #       .tracktionedit on disk. So if the caller just rewrote the
+    #       file, revert won't pick up the changes.
+    #
+    # We can't cheaply distinguish the two cases via UIA, so we always
+    # do the safe thing: close the existing tab, then drag-drop the
+    # file fresh. Drag-drop always imports from disk, so the new
+    # content guaranteed reaches Waveform.
+    #
+    # Caller can pass `prefer_revert=True` to use the cheaper revert
+    # path when they know the edit is project-native and unchanged on
+    # disk. Default is False (correctness over speed).
     if state.get("file_already_loaded"):
         existing_tab = state["file_already_loaded"]
+        prefer_revert = bool(args.get("prefer_revert", False))
+
+        if prefer_revert:
+            focus_res = _focus_tab(existing_tab)
+            try:
+                from .waveform_workflows import waveform_revert_to_saved
+                r = waveform_revert_to_saved({})
+                revert_ok = bool(r.get("ok"))
+                revert_err = r.get("error") if not revert_ok else None
+            except Exception as e:
+                revert_ok = False
+                revert_err = str(e)
+            return {
+                "ok": True, "file_path": file_path,
+                "mode": "already_open_reverted" if revert_ok else "already_open",
+                "active_tab": existing_tab,
+                "focused": focus_res.get("ok", False),
+                "reverted": revert_ok,
+                **({"revert_error": revert_err} if revert_err else {}),
+            }
+
+        # Default: close + re-import to guarantee disk content reaches Waveform
         focus_res = _focus_tab(existing_tab)
-        revert_ok = False
-        revert_err: str | None = None
-        try:
-            from .waveform_workflows import waveform_revert_to_saved
-            r = waveform_revert_to_saved({})
-            revert_ok = bool(r.get("ok"))
-            if not revert_ok:
-                revert_err = r.get("error")
-        except Exception as e:
-            revert_err = str(e)
-        return {
-            "ok": True, "file_path": file_path,
-            "mode": "already_open_reverted" if revert_ok else "already_open",
-            "active_tab": existing_tab,
-            "focused": focus_res.get("ok", False),
-            "reverted": revert_ok,
-            **({"revert_error": revert_err} if revert_err else {}),
-        }
+        time.sleep(0.3)
+        close_ok = _close_active_tab()
+        time.sleep(0.5)
+        # Now do the drag-drop (case 4 logic, intentional fall-through)
+        post_view = _detect_active_view()
+        if post_view != "edit":
+            # No edits remaining — try to land in welcome / projects;
+            # drag-drop won't work from there. Cold-start workaround:
+            # if we have no edit view, switch to any remaining edit
+            # tab. Otherwise instruct caller.
+            remaining = _list_tab_titles()
+            if remaining:
+                _focus_tab(remaining[0])
+                time.sleep(0.3)
+        result = _open_in_running(str(file_path))
+        if isinstance(result, dict) and result.get("ok"):
+            result["mode"] = "reimported_after_close"
+            result["closed_old_tab"] = existing_tab
+            result["close_ok"] = close_ok
+        return result
 
     # Case 4: drag-drop. Drops only land on an edit timeline; the
     # Welcome / Projects / Settings tabs silently swallow them. If
@@ -398,6 +438,44 @@ def _detect_active_view() -> str:
         return "unknown"
     except Exception:
         return "unknown"
+
+
+def _close_active_tab() -> bool:
+    """Close whatever edit tab is currently active. Returns True on
+    success. Uses Ctrl+W which Waveform binds to "close active tab"
+    (verified). If a "save changes?" dialog pops up, declines (we want
+    to discard whatever's in memory and re-import from disk)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        from . import win_input
+    except ImportError:
+        return False
+    win_input.win_send_keys({"keys": "{ESC}{ESC}", "silent_focus": True,
+                              "delay_after": 0.2})
+    res = win_input.win_send_keys({"keys": "^w", "silent_focus": True,
+                                     "delay_after": 0.5})
+    if not res.get("ok"):
+        return False
+    # If a "save changes before closing?" dialog appears, hit "No"
+    # (Tab+Enter in many cases, or just Esc → No since we don't want
+    # to save Waveform's stale cached state). Try Tab+Enter first.
+    time.sleep(0.4)
+    # Check for a dialog
+    try:
+        import pygetwindow as gw  # type: ignore[import-untyped]
+        for w in gw.getAllWindows():
+            tl = (w.title or "").lower().strip()
+            if any(k in tl for k in ("save", "discard", "confirm")) \
+                    and "waveform" not in tl:
+                # Default Yes button = save. We want NO/Discard.
+                # Sending Alt+N (No) is most reliable cross-version.
+                win_input.win_send_keys({"keys": "%n", "silent_focus": True,
+                                          "delay_after": 0.4})
+                break
+    except Exception:
+        pass
+    return True
 
 
 def _focus_tab(tab_name: str) -> dict:
