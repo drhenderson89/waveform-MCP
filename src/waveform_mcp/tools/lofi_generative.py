@@ -177,8 +177,12 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
         midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": drum_notes})
 
     # --- 5. Bass ---
+    # NOTE: plugin name is left unset so it falls back to type="4OSC",
+    # which IS in the calibration table (key "4osc" → -8 dB offset).
+    # Setting a custom name like "Bass" makes calibration miss the
+    # lookup and use the conservative -10 dB unknown default.
     bass_id = track_tools.track_add({"name": "Bass", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": bass_id, "type": "4OSC", "name": "Bass"})
+    plugin_tools.plugin_add({"track_id": bass_id, "type": "4OSC"})
     bass_clip = midi_tools.midi_clip_add({
         "track_id": bass_id, "name": "Bass",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -201,7 +205,7 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
 
     # --- 6. Keys (jazz piano comp from progression voicings) ---
     keys_id = track_tools.track_add({"name": "Keys", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": keys_id, "type": "4OSC", "name": "Keys"})
+    plugin_tools.plugin_add({"track_id": keys_id, "type": "4OSC"})
     keys_clip = midi_tools.midi_clip_add({
         "track_id": keys_id, "name": "Keys",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -223,8 +227,7 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
 
     # --- 7. Melody (per-section with fresh seed → variety) ---
     melody_id = track_tools.track_add({"name": "Melody", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": melody_id, "type": "4OSC",
-                              "name": "Melody"})
+    plugin_tools.plugin_add({"track_id": melody_id, "type": "4OSC"})
     mel_clip = midi_tools.midi_clip_add({
         "track_id": melody_id, "name": "Melody",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -261,7 +264,7 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
 
     # --- 8. Pad (chord-tone sustain) ---
     pad_id = track_tools.track_add({"name": "Pad", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": pad_id, "type": "4OSC", "name": "Pad"})
+    plugin_tools.plugin_add({"track_id": pad_id, "type": "4OSC"})
     pad_clip = midi_tools.midi_clip_add({
         "track_id": pad_id, "name": "Pad",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -279,17 +282,34 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
         ])
     midi_tools.midi_notes_add({"clip_id": pad_clip, "notes": pad_notes})
 
-    # --- 9. Mix balance via the calibrated reference path ---
+    # --- 9. Mix balance — user-tuned offsets on top of MIX_BALANCE["lofi"]
+    #
+    # MIX_BALANCE defaults for lofi: drums -8, bass -18, keys -2,
+    # melody -8, pad -18 dB.
+    #
+    # Empirical tuning from listening tests:
+    #   * Keys at -2 dB are way too hot — drown the melody. Pull down 8 dB.
+    #   * Melody at -8 dB sits underneath the keys — push up 5 dB.
+    #   * Drums at -8 dB feel underpresent in lofi (kick should hit) —
+    #     push up 5 dB.
+    #   * Pad at -18 dB is almost inaudible after master limiter — push
+    #     up 8 dB so it audibly cushions the harmony.
+    #   * Bass at -18 dB is a touch low — nudge up 3 dB.
     track_tools.mix_apply_reference({"track_id": drums_id,
-                                      "genre": "lofi", "role": "drums"})
+                                      "genre": "lofi", "role": "drums",
+                                      "offset_db": +5})
     track_tools.mix_apply_reference({"track_id": bass_id,
-                                      "genre": "lofi", "role": "bass"})
+                                      "genre": "lofi", "role": "bass",
+                                      "offset_db": +3})
     track_tools.mix_apply_reference({"track_id": keys_id,
-                                      "genre": "lofi", "role": "keys"})
+                                      "genre": "lofi", "role": "keys",
+                                      "offset_db": -8})
     track_tools.mix_apply_reference({"track_id": melody_id,
-                                      "genre": "lofi", "role": "melody"})
+                                      "genre": "lofi", "role": "melody",
+                                      "offset_db": +5})
     track_tools.mix_apply_reference({"track_id": pad_id,
-                                      "genre": "lofi", "role": "pad"})
+                                      "genre": "lofi", "role": "pad",
+                                      "offset_db": +8})
 
     # --- 10. Save ---
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
