@@ -234,22 +234,46 @@ def waveform_launch(args: dict) -> dict:
             **({"revert_error": revert_err} if revert_err else {}),
         }
 
-    # Case 4: drag-drop — but only if we're on an edit view. JUCE only
-    # honors OLE drops on the timeline; Welcome/Projects/Settings tabs
-    # silently swallow drops with no effect, leading to mysterious
-    # "succeeded but nothing happened" outcomes.
+    # Case 4: drag-drop. Drops only land on an edit timeline; the
+    # Welcome / Projects / Settings tabs silently swallow them. If
+    # we're not on an edit view, switch to one first by clicking any
+    # existing edit tab. If no edit tabs exist, we genuinely can't
+    # drag-drop and bail informatively.
     active_view = state.get("active_view") or "unknown"
     if active_view != "edit":
-        return {
-            "ok": False,
-            "stage": "wrong_view",
-            "active_view": active_view,
-            "error": (f"Waveform is on the '{active_view}' view; drag-drop "
-                      f"only works from the timeline (edit) view. Open any "
-                      f"existing edit tab first, or close Waveform and "
-                      f"call again to cold-start."),
-            "tab_titles": state.get("tab_titles", []),
-        }
+        existing_tabs = state.get("tab_titles") or []
+        if not existing_tabs:
+            return {
+                "ok": False,
+                "stage": "no_edit_view_available",
+                "active_view": active_view,
+                "error": ("Waveform has no edit tabs open. Drag-drop "
+                          "requires an existing edit view to land on. "
+                          "Open any project/edit first (or close Waveform "
+                          "so this call cold-starts it with the file)."),
+            }
+        # Click into the first edit tab to bring us into edit view
+        first_tab = existing_tabs[0]
+        focus_res = _focus_tab(first_tab)
+        time.sleep(0.5)
+        post_view = _detect_active_view()
+        if post_view != "edit":
+            return {
+                "ok": False,
+                "stage": "could_not_switch_to_edit_view",
+                "active_view": post_view,
+                "tried_tab": first_tab,
+                "error": (f"Tried to switch to tab '{first_tab}' but "
+                          f"Waveform is now showing '{post_view}', not an "
+                          f"edit view. Cannot proceed with drag-drop."),
+                "focus_ok": focus_res.get("ok"),
+            }
+        # We're in edit view now — proceed
+        result = _open_in_running(str(file_path))
+        # Tag the mode so caller knows we auto-switched
+        if isinstance(result, dict) and result.get("ok"):
+            result["auto_switched_to_tab"] = first_tab
+        return result
 
     return _open_in_running(str(file_path))
 
