@@ -9,13 +9,17 @@ An [MCP](https://modelcontextprotocol.io/) server that gives an LLM agent contro
 
 ## What this gives you
 
-- **141 MCP tools** across edit lifecycle, tracks/buses, MIDI, audio clips, plugins, automation, music theory, mix balance, **composition primitives**, **drum pattern library**, **progression generator**, **voice leading**, **arrangement planner**, **audio analysis (LUFS / tempo / key detection)**, **reference song database**, **mastering chain templates**, **MIDI export**, **chord chart export**, **A/B snapshots**, **tool-call history**, render, loop library, VST discovery, schema capture, and Waveform UI control
-- **Three composers** — `compose_lofi_track`, `compose_synthwave_track`, `compose_rainstorm`
+- **150+ MCP tools** across edit lifecycle, tracks/buses, MIDI, audio clips, plugins, automation, music theory, mix balance, **composition primitives**, **drum pattern library**, **progression generator**, **voice leading**, **arrangement planner**, **audio analysis (LUFS / tempo / key detection)**, **reference song database**, **mastering chain templates**, **MIDI export**, **chord chart export**, **A/B snapshots**, **tool-call history**, render, loop library, VST discovery, schema capture, and Waveform UI control
+- **Six composers** — `compose_lofi_track`, `compose_synthwave_track`, `compose_djent_track`, `compose_djent_real` (with VST amp sims), `compose_lofi_generative` (every seed = a different song), `compose_rainstorm`
+- **Reference-driven composition pipeline** — point at any audio file (`compose_from_reference`) and the MCP analyzes it, builds a `CompositionSpec` of its tempo / key / sections / chord progression / instrumentation, optionally transcribes the polyphonic content (BasicPitch), detects reverb tail and sidechain pumping, then writes a Waveform edit modeled on it
+- **Plugin-aware fader calibration** — `mix_apply_reference` knows that a sforzando-fed SFZ is ~16 dB quieter than a sample-based drum kit at the same fader, so role-target dB lookups land at the *audible* level you asked for instead of the literal fader value
 - **`compose_variations`** to spin off N seeded variations of any composer
 - **A music-theory knowledge layer** — scales, chord progressions, cadences, song forms, voice-leading rules, mix-balance reference levels per genre, reference song database
+- **State-aware Waveform launch** — `waveform_launch` detects whether the file is already loaded, what view Waveform is on, whether a modal dialog is blocking, then chooses the right path (cold-start spawn, focus + revert from disk, or real OLE drag-drop from Explorer)
 - **Verified round-trip** between the in-memory model and Waveform's `.tracktionedit` XML
 - **Clip-level fades, gain, offset, automation curves** — proven primitives the LLM can use to iterate musically
 - **Reliable workflow loop** — `compose → write → reload via File → Revert to saved → listen → tweak`
+- **250 tests passing** — every fix has a regression test guarding it
 
 ---
 
@@ -71,34 +75,36 @@ The LLM calls `compose_synthwave_track` → `waveform_revert_to_saved` and you p
 Four layers, each with a clear contract:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  LLM (Claude / any MCP client)                               │
-└────────────────────────────┬─────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  LLM (Claude / any MCP client)                                   │
+└────────────────────────────┬─────────────────────────────────────┘
                              │ MCP stdio
-┌────────────────────────────▼─────────────────────────────────┐
-│  MCP server (server.py) — 107 tools                          │
-└────────────────────────────┬─────────────────────────────────┘
+┌────────────────────────────▼─────────────────────────────────────┐
+│  MCP server (server.py) — 150+ tools                             │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-      ┌──────────────┐ ┌──────────┐ ┌──────────────┐
-      │ Edit model   │ │ Knowledge│ │  Waveform    │
-      │ (in-memory)  │ │  (data)  │ │  UI control  │
-      ├──────────────┤ ├──────────┤ ├──────────────┤
-      │ Tracks       │ │ Scales   │ │ pywinauto +  │
-      │ Clips        │ │ Chords   │ │ UIA + ffmpeg │
-      │ Notes        │ │ Forms    │ │              │
-      │ Plugins      │ │ Mix      │ │ Menu invoke  │
-      │ Automation   │ │ Velocity │ │ Revert       │
-      │ Markers      │ │ Rhythm   │ │ Render→MP3   │
-      └──────┬───────┘ └──────────┘ └──────┬───────┘
-             │                             │
-             ▼                             ▼
-   ┌──────────────────┐          ┌────────────────────┐
-   │ xml_writer.py    │          │ Waveform 13        │
-   │ xml_reader.py    │ ◀──────▶ │ (the running app)  │
-   │ ↓ .tracktionedit │          └────────────────────┘
-   └──────────────────┘
+              ┌──────────────┼─────────────────────┬──────────────┐
+              ▼              ▼                     ▼              ▼
+      ┌──────────────┐ ┌──────────┐ ┌─────────────────────┐ ┌──────────────┐
+      │ Edit model   │ │ Knowledge│ │ Reference pipeline  │ │  Waveform    │
+      │ (in-memory)  │ │  (data)  │ │ (audio file → song) │ │  UI control  │
+      ├──────────────┤ ├──────────┤ ├─────────────────────┤ ├──────────────┤
+      │ Tracks       │ │ Scales   │ │ music-analyzer       │ │ pywinauto +  │
+      │ Clips        │ │ Chords   │ │ reference_adapter    │ │ UIA + ffmpeg │
+      │ Notes        │ │ Forms    │ │ poly_transcribe (BP) │ │ Drag-drop    │
+      │ Plugins      │ │ Mix      │ │ production_analysis  │ │ Menu invoke  │
+      │ Automation   │ │ Velocity │ │ automation_features  │ │ Revert       │
+      │ Markers      │ │ Rhythm   │ │ → CompositionSpec    │ │ Render→MP3   │
+      └──────┬───────┘ └──────────┘ └──────┬──────────────┘ └──────┬───────┘
+             │                             │                       │
+             │           ┌─────────────────┘                       │
+             ▼           ▼                                         ▼
+   ┌────────────────────────┐                          ┌────────────────────┐
+   │ compose_from_spec      │                          │ Waveform 13        │
+   │ + mix_calibration      │                          │ (the running app)  │
+   │ ↓ xml_writer.py        │                          └────────────────────┘
+   │ ↓ .tracktionedit       │ ◀──────────── State-aware launch ──────────┘
+   └────────────────────────┘
 ```
 
 **Key design choice:** The model is *not* a 1:1 of the Tracktion ValueTree — it's the shape the LLM wants to work with, projected onto the XML on save and projected back on load. This makes tools simple (`audio_clip_import(track_id, file_path, start_beats, length_beats, fade_in_beats, ...)`) instead of forcing the LLM to think in JUCE-internals.
@@ -185,10 +191,19 @@ The data behind these:
 - 7 surprise devices (truck-driver modulation, deceptive cadence, …)
 - **Mix balance reference table** — 7 genres × 14 roles, fully annotated
 
-### Composers (`composer.py`)
-- `compose_lofi_track` — 32-bar lofi with drums, bass, keys, pad, melody, counter; section-aware velocity envelopes; tempo automation; lofi master chain
+### Composers (`composer.py`, `lofi_generative.py`)
+- `compose_lofi_track` — 32-bar lofi with drums, bass, keys, pad, melody, counter; section-aware velocity envelopes; tempo automation; lofi master chain. Accepts an optional `chord_progression` arg to override the default Fmaj7-Am7-Dm7-Cmaj7 vocabulary.
+- `compose_lofi_generative` — *generative* lofi composer that drives `progression_generate`, `arrangement_plan`, `drum_pattern`, `melody_generate`, and `bassline_generate`. Every seed produces a meaningfully different song: different chords, section layout, drum density, melody contour, bass feel, tempo. **Bass is locked to kick onsets** for proper rhythm-section meshing; **melody is quantized to 8th-note grid** so it lines up with drums; uses real multi-sample bass guitar when factory samples are available.
 - `compose_synthwave_track` — 64-bar synthwave with 7 tracks; 9-section form (intro/verse/chorus/verse/chorus/bridge/buildup/chorusFinal/outro); per-section bass feels (half-time / 8th-pump / walking); section-keyed arp themes; sidechain-style filter pump; section markers; clip fades
+- `compose_djent_track` — synthetic progressive-metal track with 4OSC-driven rhythm guitars (no VSTs needed)
+- `compose_djent_real` — full progressive-metal arrangement using bundled VST amp sims (sforzando + Ignite Anvil + Mercuriall MT-A + TSC). 9-section form including a buildup and 8-bar guitar solo. Uses real metal samples for the kit.
 - `compose_rainstorm` — ambient soundscape with rain + wind + lowpassed-distant thunder; per-clip gain randomization; offset trim; track FX
+
+### Reference-driven composition (`composition_spec.py`, `reference_adapter.py`, `tools/compose_from_spec.py`, `tools/import_song.py`)
+- `analyze_to_spec(audio_path)` — runs music-analyzer on any audio file, returns a `CompositionSpec` dict (tempo, key, sections, chord progression, instrumentation) without writing any edit. Use to inspect / hand-edit the spec before composing.
+- `compose_from_reference(audio_path, out_path)` — full pipeline: analyze → adapt → optionally transcribe with BasicPitch → optionally detect reverb / sidechain via `production_analysis` → build `.tracktionedit`. Returns fidelity caveats listing what's reproduced exactly versus approximated.
+- `compose_from_spec_json(spec | spec_path, out_path)` — build an edit from an inline or hand-edited `CompositionSpec` JSON. Useful when you've inspected an analyzed spec and want to tweak it before building.
+- `compose_from_spec(spec, out_path)` — internal builder used by all of the above; drives the existing primitives (`track_add`, `plugin_add`, `midi_clip_add`, `mix_apply_reference`) so output is calibration-aware.
 
 ### Render (`render.py`, `waveform_workflows.py`)
 `waveform_render_export` · `waveform_render_to_mp3` (uses bundled ffmpeg + libmp3lame)
@@ -196,8 +211,20 @@ The data behind these:
 ### Waveform UI control (`waveform_workflows.py`)
 `waveform_new_project` · `waveform_save` · `waveform_revert_to_saved` *(the iteration loop unlocker)* · `waveform_close_active_tab` · `waveform_active_tab` · `waveform_project_loaded` · `waveform_menu_invoke` · `waveform_add_track` · `waveform_select_track` · `waveform_insert_clip_on_track` · `waveform_build_skeleton`
 
-### App lifecycle (`waveform_app.py`)
-`waveform_locate` · `waveform_status` · `waveform_launch` · `waveform_focus` · `waveform_quit` · `waveform_settings_dir`
+### App lifecycle + state-aware launch (`waveform_app.py`)
+`waveform_locate` · `waveform_status` · `waveform_focus` · `waveform_quit` · `waveform_settings_dir`
+
+`waveform_launch(file_path)` is **state-aware** — it inspects Waveform's UI before deciding what to do:
+
+| Detected state | Action |
+|---|---|
+| App not running | Cold-start spawn with file as CLI arg |
+| File already loaded as a tab | Focus tab + revert from disk |
+| Modal dialog blocking input | Bail with a clear `stage: modal_dialog_blocking` error |
+| App on Welcome / Projects / Settings (no edit view) | Auto-switch to an existing edit tab so drop has a target |
+| App on edit timeline, file not loaded | **Real OLE drag-drop from Explorer** (the only mechanism Waveform's JUCE `IDropTarget` actually honors for `.tracktionedit` files in a running instance) |
+
+Drag-drop is implemented via `explorer.exe /select,<file>` to pre-select the file in Explorer, UIA-find its on-screen rect, then SendInput-level mouse drag to Waveform's window — same code path JUCE sees from a real user drag.
 
 ### Loop library (`loops.py`)
 `loop_search` (by tempo / bars / name) · `loop_drop` (auto-length, fit-to-tempo)
@@ -215,37 +242,57 @@ The data behind these:
 ```
 waveform-mcp/
 ├── src/waveform_mcp/
-│   ├── server.py                  MCP server entry (stdio)
-│   ├── model.py                   Edit / Track / Clip / Note / AutomationLane dataclasses
-│   ├── xml_writer.py              Edit → .tracktionedit
-│   ├── xml_reader.py              .tracktionedit → Edit
-│   ├── audio_convert.py           ffmpeg-backed MP3→WAV cache for Sampler sources
-│   ├── music_theory_data.py       SCALES, PROGRESSIONS, GENRES, MIX_BALANCE, ...
-│   ├── events.py                  event bus + JSONL log
-│   ├── diff.py                    Edit-diff for change events
+│   ├── server.py                       MCP server entry (stdio)
+│   ├── model.py                        Edit / Track / Clip / Note / AutomationLane dataclasses
+│   ├── xml_writer.py                   Edit → .tracktionedit
+│   ├── xml_reader.py                   .tracktionedit → Edit
+│   ├── audio_convert.py                ffmpeg-backed MP3→WAV cache for Sampler sources
+│   ├── music_theory_data.py            SCALES, PROGRESSIONS, GENRES, MIX_BALANCE, ...
+│   ├── events.py                       event bus + JSONL log
+│   ├── diff.py                         Edit-diff for change events
+│   ├── mix_calibration.py              Plugin-aware fader calibration (offset table + lookup)
+│   ├── composition_spec.py             Pure dataclass schema for analysis-driven composition
+│   ├── reference_adapter.py            Analyzer JSON → CompositionSpec (chord / section / timing helpers)
+│   ├── poly_transcribe.py              Spotify BasicPitch wrapper — polyphonic audio → MIDI
+│   ├── production_analysis.py          RT60 / sidechain detection from rendered audio
+│   ├── automation_from_features.py     Audio features → automation breakpoints (pan / cutoff / volume rides)
 │   ├── tools/
-│   │   ├── edit.py                Edit lifecycle
-│   │   ├── tracks.py              Tracks + mix balance
-│   │   ├── midi.py                MIDI clips/notes
-│   │   ├── audio.py               Audio clip import
-│   │   ├── clips.py               Clip mutators (move, resize, duplicate, set)
-│   │   ├── plugins.py             Plugin add + reverb / drum kit / modifier helpers
-│   │   ├── automation.py          Automation lanes (pan + plugin params)
-│   │   ├── preset_library.py      Factory preset browser
-│   │   ├── loops.py               Loop library search + drop
-│   │   ├── render.py              Render stubs
-│   │   ├── waveform_app.py        App lifecycle
-│   │   ├── waveform_workflows.py  UI workflows (revert, render-to-mp3, etc.)
-│   │   ├── desktop.py             Generic desktop primitives
-│   │   ├── win_input.py           Windows UIA + keystroke primitives
-│   │   ├── schema_capture.py      Hand-fixture capture for schema reverse-engineering
-│   │   ├── music_theory.py        Theory query tools
-│   │   ├── composer.py            compose_lofi_track, compose_synthwave_track, compose_rainstorm
-│   │   └── common.py              @op decorator (apply + diff + event)
+│   │   ├── edit.py                     Edit lifecycle
+│   │   ├── tracks.py                   Tracks + mix balance (calibration-aware)
+│   │   ├── midi.py                     MIDI clips/notes
+│   │   ├── audio.py                    Audio clip import
+│   │   ├── clips.py                    Clip mutators (move, resize, duplicate, set)
+│   │   ├── plugins.py                  Plugin add + auto-drum-kit-load + reverb / EQ / comp helpers
+│   │   ├── automation.py               Automation lanes (pan + plugin params)
+│   │   ├── preset_library.py           Factory preset browser
+│   │   ├── loops.py                    Loop library search + drop
+│   │   ├── render.py                   Render stubs
+│   │   ├── waveform_app.py             App lifecycle + state-aware launch (cold-start / revert / drag-drop)
+│   │   ├── waveform_workflows.py       UI workflows (revert, render-to-mp3, etc.)
+│   │   ├── desktop.py                  Generic desktop primitives
+│   │   ├── win_input.py                Windows UIA + keystroke primitives
+│   │   ├── schema_capture.py           Hand-fixture capture for schema reverse-engineering
+│   │   ├── music_theory.py             Theory query tools
+│   │   ├── composition.py              progression_generate / voice_lead / arrangement_plan
+│   │   ├── melody.py                   melody_generate / arp_pattern / bassline_generate / motif_develop
+│   │   ├── drum_patterns.py            50+ named drum grooves indexed by (genre, role)
+│   │   ├── audio_analysis.py           LUFS / spectrum / compare via ffmpeg
+│   │   ├── audio_detect.py             BPM + key detection from audio
+│   │   ├── reference_songs.py          Curated reference song database
+│   │   ├── workflow.py                 Master chain templates / snapshots / variations / chord chart export
+│   │   ├── midi_export.py              .mid export
+│   │   ├── composer.py                 compose_lofi_track, compose_synthwave_track, compose_djent_*, compose_rainstorm
+│   │   ├── lofi_generative.py          compose_lofi_generative (every seed = different song)
+│   │   ├── compose_from_spec.py        Generic spec → .tracktionedit builder
+│   │   ├── import_song.py              analyze_to_spec / compose_from_reference / compose_from_spec_json
+│   │   └── common.py                   @op decorator (apply + diff + event)
 │   └── preview/
-│       ├── app.py                 FastAPI + websocket
-│       └── static/                HTML / JS piano-roll
-├── tests/
+│       ├── app.py                      FastAPI + websocket
+│       └── static/                     HTML / JS piano-roll
+├── tests/                              250 tests covering primitives, composers, calibration, adapter, builder, audit regressions
+├── scripts/
+│   ├── lofi_from_ecstasy.py            Demo: build a lofi track inspired by another song's chord palette
+│   └── run_analyzer.py                 Run music-analyzer on a rendered file + measure stems
 ├── docs/
 │   ├── img/synthwave_arrangement.png
 │   ├── ARCHITECTURE.md
@@ -297,12 +344,103 @@ Sources informing the table:
 
 ---
 
+## Plugin-aware fader calibration
+
+`MIX_BALANCE[genre][role]` says "rhythm guitar at -8 dB" — but a sample-based drum kit at unity fader is roughly *16 dB louder* than a sforzando-driven SFZ at unity fader. So setting drums to -5 dB and rhythm guitar to -8 dB on the literal fader produces a mix where drums are about 13 dB too loud, not 3.
+
+`mix_calibration.py` solves this. Every plugin chain has a known output-offset relative to a "sample-based drum sampler at unity = 0 dB" reference:
+
+```python
+PLUGIN_CHAIN_OFFSETS_DB = {
+    ("sampler",):                     0.0,    # reference
+    ("4osc",):                       -8.0,
+    ("sforzando",):                 -16.0,    # bare sforzando + typical SFZ
+    ("sforzando", "anvil", "mt-a", "tsc 1.1"):  0.0,    # full guitar chain ≈ unity
+    ("808 kit",):                     0.0,    # named alias for sampler
+    ("lofi bass",):                   0.0,    # multi-sample bass guitar
+    ...
+}
+```
+
+`mix_apply_reference(track_id, genre, role)` now does:
+
+```
+fader_db = role_target_db − chain_offset_db(track.plugins) + extra_offset_db
+```
+
+So "rhythm guitar at -8 dB" lands at the correct *audible* -8 dB regardless of whether the chain is a single 4OSC patch or `sforzando→Anvil→MT-A→TSC` — the fader value gets compensated automatically.
+
+**Robustness:** lookups never raise. Unknown chains fall back to a conservative -10 dB offset and surface a `chain_offset_db: ... → no match` warning in logs, so any composer that ships a new plugin chain immediately knows to register an offset. Final fader values are clamped to `[-32, +8]` dB. Identical inputs always produce identical outputs.
+
+---
+
+## Reference-driven composition
+
+Point at any audio file and the MCP can produce a new `.tracktionedit` modeled on it — using its tempo, key, structure, chord progression, and (optionally) transcribed melodic content.
+
+```
+audio file → music-analyzer → analyzer JSON → reference_adapter
+        → CompositionSpec → compose_from_spec → .tracktionedit
+```
+
+### Phase A — what's reproduced exactly
+
+- **Tempo + key + time-sig** — pulled directly from the analyzer
+- **Section timeline** — intro / verse / chorus / breakdown / etc. with per-section density and brightness, snapped to bar boundaries so drum loops align with section starts
+- **Chord progression** — every detected chord placed beat-aligned on the chord track. Bass roots auto-follow.
+- **Form fidelity** — overlapping or out-of-order sections from the analyzer get resolved to a clean monotonic timeline
+- **Plugin-aware mix calibration** at the end so the cover comes out balanced
+
+### Phase B — fidelity upgrades (opt-in, all gracefully degrade if deps absent)
+
+- **`poly_transcribe.py` (Spotify BasicPitch)** — when installed, transcribes the audio into MIDI notes (any polyphony) and routes them to the right tracks by pitch range (bass / lead / keys). Notes are quantized to a 16th-note grid and same-pitch micro-collisions are merged.
+- **`production_analysis.py`** — Schroeder-integration RT60 estimation per stem (auto-applies to plate reverb plugin params), sidechain-pump detection (envelope correlation against drum onsets, applies to a kick-triggered ducking compressor).
+- **`automation_from_features.py`** — pan-from-stereo-balance time-series, volume rides from RMS envelope, filter cutoff curves from spectral centroid trajectory.
+
+### What it doesn't reproduce
+
+- **Vocals as vocals** — no synth-vocal layer. Vocal lines fall through to the Lead track as a synth, or are skipped.
+- **Exact polyphonic notes** — BasicPitch is the SOTA open transcriber but still ~70-90% F1 on dense mixes; covers will be in the same key with similar shape, not bit-exact.
+- **Production tone exactly** — first-order match via plugin chain selection + reverb / sidechain heuristics, not a tone clone.
+
+### Public tools
+
+```python
+analyze_to_spec({"audio_path": "...wav"})
+# → {"ok": True, "spec": {...}, "summary": {tempo, key, sections, ...},
+#    "fidelity_caveats": [...], "transcription": {used, note_count, ...}}
+
+compose_from_reference({"audio_path": "...wav", "out_path": "...tracktionedit"})
+# Full pipeline: analyze + adapt + transcribe + build + save
+
+compose_from_spec_json({"spec": {...}, "out_path": "...tracktionedit"})
+# Build from a hand-edited or saved CompositionSpec
+```
+
+To get the Phase B upgrades:
+```powershell
+<music-analyzer-venv>\Scripts\pip install basic-pitch onnxruntime
+```
+
+The MCP detects installed deps and uses them when available; without them the pipeline still produces a structurally-faithful cover, just with chord-tone placeholders for the lead/melody instead of real transcribed notes.
+
+---
+
 ## Known limitations
 
 - **Track-volume `AUTOMATIONCURVE` is disabled.** Waveform's `volume` plugin doesn't honor our curve schema and silences the affected track. The MCP refuses the target with a clear error and points to working alternatives (clip fades, multiple clips with per-clip gain, static `mix_set`).
 - **Plugin modifier matrix is exploratory.** `plugin_add_modifier` writes a generic modmatrix shape; needs a hand-edited fixture to confirm the per-plugin schema before LFO modulation works reliably for 4OSC and friends.
 - **Headless render not built yet.** `waveform_render_to_mp3` drives Waveform's UI export — works, but requires Waveform to be running. A C++ helper linking `tracktion_engine` is the eventual fix.
 - **Linux/macOS UI control absent.** Content discovery (presets, loop library, VST list) is OS-aware; UI automation is Windows-only.
+- **Reference covers don't reproduce vocals as vocals.** No singing-synth integration. Vocal melody lines either fall through to a synth Lead or are skipped; lyrics module captures text but it's not played back.
+- **Poly transcription is approximate.** BasicPitch sits at ~70-90% F1 on clean material, lower on dense metal mixes. Covers will be in the same key with similar shape, not the exact notes.
+
+### Solved (kept here for context — these used to be limitations)
+
+- **Drum sampler silent in spec-driven composers** — `plugin_add` now auto-populates a Sampler with the factory 808 kit when added to a track named `Drums` / `Kit` / `Percussion`. Single fix benefits every composer.
+- **Drag-drop file open into running Waveform** — works via real OLE drag-drop from Explorer (`waveform_launch` triggers it automatically when the file isn't already loaded). Used to be impossible because Waveform's single-instance handler eats CLI-arg-based forwarding.
+- **State-aware launch flow** — `waveform_launch` no longer drags files into the wrong view; it auto-detects modal dialogs, the active tab, and the active view, picks the right action.
+- **Plugin-name-mismatch silently breaking calibration** — calibration table now covers all named-kit aliases (`808 Kit`, `Lofi Bass`, `Counter Synth`, etc.) so composer-named plugins resolve correctly.
 
 ---
 
@@ -314,6 +452,9 @@ Sources informing the table:
 - Sidechain modifier capture
 - Clip Launcher (v13) support
 - Linux UI control via `xdotool`/`wmctrl` once UIA is no longer the only path
+- Singing-synth integration (Sinsy / SynthV Lite) so `compose_from_reference` can reproduce vocal melodies
+- Voice leading between Keys and Melody so they don't clash on shared scale degrees
+- Drum-pattern variation per section (fills on section boundaries, ghost-note humanization)
 
 ---
 
