@@ -113,7 +113,12 @@ def _read_note(el: ET.Element) -> Note:
 
 def _read_midi_clip(el: ET.Element) -> MidiClip:
     notes: list[Note] = []
-    seq = el.find("SEQUENCE") or el.find("MIDISEQUENCE")
+    # ElementTree's truthiness on Element is deprecated — use explicit
+    # None checks. Both <SEQUENCE> and <MIDISEQUENCE> tags appear in
+    # different .tracktionedit versions.
+    seq = el.find("SEQUENCE")
+    if seq is None:
+        seq = el.find("MIDISEQUENCE")
     if seq is not None:
         for n in seq.findall("NOTE"):
             notes.append(_read_note(n))

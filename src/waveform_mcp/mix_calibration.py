@@ -60,6 +60,10 @@ PLUGIN_CHAIN_OFFSETS_DB: dict[tuple[str, ...], float] = {
     # ── Built-in Tracktion instrument plugins ──
     ("sampler",):                    0.0,    # reference: drum sampler @ default
     ("4osc",):                      -8.0,    # built-in synth, varies by patch
+    # ── Named Sampler kits / banks (alias to sampler offset) ──
+    ("808 kit",):                    0.0,    # the factory 808 drum kit alias
+    ("metal kit",):                  0.0,    # named sampler from compose_djent
+    ("lofi bass",):                  0.0,    # multi-sample bass guitar (real samples)
     # ── SFZ/sample-library instruments via sforzando ──
     ("sforzando",):                 -16.0,   # bare sforzando + typical SFZ
     # ── Guitar amp-sim chains (sforzando feeding amp+cab) ──
@@ -74,6 +78,16 @@ PLUGIN_CHAIN_OFFSETS_DB: dict[tuple[str, ...], float] = {
     ("4osc", "anvil", "mt-a"):       -1.0,
     # ── MIDI drum samplers other than the built-in ──
     ("mt power drum kit",):          +2.0,   # MT-PDK is hotter than built-in
+    # ── Named 4OSC presets used by genre composers ──
+    # These are the same engine as ("4osc",) — alias to its offset.
+    ("counter synth",):             -8.0,
+    ("marimba 4osc",):              -8.0,
+    ("keys synth",):                -8.0,
+    ("pad synth",):                 -8.0,
+    ("bass synth",):                -8.0,
+    # ── 4OSC + per-track FX chains (compose_lofi_track bass + reverb) ──
+    ("lofi bass", "bass cleanup", "bass comp"): +2.0,
+    ("keys synth", "plate reverb"): -8.0,
 }
 
 # When no plugin chain is known (track has no instrument plugins, or all

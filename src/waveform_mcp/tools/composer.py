@@ -495,6 +495,10 @@ JAZZ_VOICINGS = {
     38: [65, 72, 76],   # Dm7
     36: [64, 71, 74],   # Cmaj7
 }
+# Snapshot of the original lookup so compose_lofi_track can restore it
+# after a per-call override (otherwise custom chord_progression entries
+# leak into subsequent calls).
+_JAZZ_VOICINGS_DEFAULT = dict(JAZZ_VOICINGS)
 
 # Populated per-call by compose_lofi_track when args["chord_progression"]
 # overrides the default Fmaj7-Am7-Dm7-Cmaj7 set. Maps bass_root → 7th
@@ -1078,6 +1082,14 @@ def compose_lofi_track(args: dict) -> dict:
     # composition helpers look up by root). Voicings are 3-note rootless
     # 3-7-9 stacks the keys part will play.
     progression = args.get("chord_progression")
+    # Reset module-level state so a custom progression in a previous
+    # call doesn't leak into this one. JAZZ_VOICINGS is restored to its
+    # original default; SEVENTH_INTERVAL_OVERRIDE is cleared.
+    JAZZ_VOICINGS.clear()
+    JAZZ_VOICINGS.update(_JAZZ_VOICINGS_DEFAULT)
+    global _SEVENTH_INTERVAL_OVERRIDE
+    _SEVENTH_INTERVAL_OVERRIDE = {}
+
     if progression:
         # Register the override into the module-level lookup tables so
         # _chord_progression / _pad_notes find them. Existing keys with
@@ -1087,10 +1099,6 @@ def compose_lofi_track(args: dict) -> dict:
             JAZZ_VOICINGS[root] = list(chord["voicing"])
         chord_keys = [int(c["bass_root"]) for c in progression]
         chords = [list(c["voicing"]) for c in progression]
-        # Patch SEVENTH_INTERVAL inside _pad_notes via a side channel:
-        # _pad_notes builds its own dict locally, so we route the user's
-        # seventh_intervals through a module-level override map.
-        global _SEVENTH_INTERVAL_OVERRIDE
         _SEVENTH_INTERVAL_OVERRIDE = {
             int(c["bass_root"]): int(c.get("seventh_interval", 11))
             for c in progression

@@ -553,64 +553,6 @@ def _bass_locked_to_kick(
     return bass_notes
 
 
-def _populate_drum_kit(track_id: str) -> bool:
-    """Load factory 808 samples onto the drum track's most recently
-    added Sampler plugin. Returns True if sounds were attached.
-
-    Handles the plugin.type case quirk: plugin_add stores type as
-    passed in ('Sampler' / 'sampler' depending on caller), so we match
-    case-insensitively. Falls back to "the most recently added plugin"
-    if no exact-type match is found — which is what compose_lofi_track
-    does.
-    """
-    base = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
-            / "Factory Presets" / "Drum Sampler")
-    if not base.exists():
-        import logging
-        logging.getLogger(__name__).warning(
-            "factory drum samples dir missing: %s", base)
-        return False
-    mappings = [
-        (36, "808 Bass Drum 115.flac",   "Kick"),
-        (38, "808 Snare Drum 253.flac",  "Snare"),
-        (39, "808 Hand Clap 7.flac",     "Clap"),
-        (42, "808 Hihat Closed 1.flac",  "Closed Hat"),
-        (46, "808 Hihat Open 2.flac",    "Open Hat"),
-        (49, "808 Cymbal 27.flac",       "Crash"),
-        (45, "808 Tom Low 44.flac",      "Low Tom"),
-        (48, "808 Tom Mid 44.flac",      "Mid Tom"),
-        (50, "808 Tom Hi 1.flac",        "Hi Tom"),
-        (37, "808 Rim Shot 1.flac",      "Rimshot"),
-    ]
-    sounds = []
-    for note, fname, name in mappings:
-        path = base / fname
-        if not path.exists():
-            continue
-        sounds.append({
-            "source": str(path), "name": name,
-            "keyNote": note, "minNote": note, "maxNote": note,
-            "startTime": 0.0, "gainDb": 0.0, "pan": 0.0, "openEnded": 1,
-        })
-    if not sounds:
-        return False
-    track = STORE.edit.track(track_id)
-    sampler = next(
-        (p for p in track.plugins
-         if (p.type or "").lower() == "sampler"),
-        None,
-    )
-    # Last-resort fallback: the most-recently-added plugin (which is
-    # what we just added in compose_lofi_generative). Same pattern
-    # compose_lofi_track uses.
-    if sampler is None and track.plugins:
-        sampler = track.plugins[-1]
-    if sampler is None:
-        return False
-    sampler.sounds = sounds
-    return True
-
-
 HANDLERS = {"compose_lofi_generative": compose_lofi_generative}
 
 TOOLS = [{
