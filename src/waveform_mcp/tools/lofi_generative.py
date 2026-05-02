@@ -248,45 +248,21 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
         "track_id": melody_id, "name": "Melody",
         "start_beats": 0.0, "length_beats": total_bars * 4,
     })["clip_id"]
-    melody_notes_all = []
-    cursor_bar = 0
-    for sec_idx, sec in enumerate(sections_plan):
-        sec_bars = sec["bars"]
-        # Skip melody during intro / outro / quiet sections
-        if sec["role"] in ("intro", "outro", "buildup") or sec_bars < 4:
-            cursor_bar += sec_bars
-            continue
-        try:
-            mel = mel_tools.melody_generate({
-                "root": key_root, "mode": key_mode,
-                "length_beats": float(sec_bars * 4),
-                "contour": rng.choice(_CONTOURS),  # contour varies per section
-                "density": rng.choice(_DENSITIES),
-                "register_octave": 5,
-                "seed": seed * 53 + sec_idx,
-            })
-            # Quantize melody to 8th-note grid + collapse same-pitch
-            # collisions. melody_generate accumulates positions
-            # sequentially with 12 ms humanize per note; cumulative
-            # drift puts notes off-grid relative to drums. Snapping to
-            # 0.5-beat grid forces every melody onset to land on the
-            # same beat positions the drums and bass are landing on.
-            section_notes_quantized = _quantize_melody_to_grid(
-                mel.get("notes", []),
-                grid_beats=0.5,
-                min_length_beats=0.25,
-            )
-            for n in section_notes_quantized:
-                melody_notes_all.append({
-                    "pitch": int(n["pitch"]),
-                    "start_beats": float(n["start_beats"]) + cursor_bar * 4,
-                    "length_beats": float(n["length_beats"]),
-                    "velocity": int(n.get("velocity", 80)),
-                })
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("layer generation failed: %s", e)
-        cursor_bar += sec_bars
+    # Chord-aware melody — pulls notes from each bar's chord tones so
+    # borrowed chords don't clash with a key-bound scale walk. Same
+    # approach the synthwave generative composer uses.
+    from .synthwave_generative import _chord_aware_lead
+    melody_notes_all = _chord_aware_lead(
+        progression_chords=progression_chords,
+        sections_plan=sections_plan,
+        total_bars=total_bars,
+        base_octave_midi=72,    # C5 — sits above keys voicings
+        seed=seed * 53 + 1,
+        rest_chance=0.45,       # lofi melody is sparser than synthwave
+    )
+    # Lofi melody is gentler than synthwave lead — pull velocity down 15
+    for n in melody_notes_all:
+        n["velocity"] = max(40, int(n["velocity"]) - 15)
     if melody_notes_all:
         midi_tools.midi_notes_add({"clip_id": mel_clip, "notes": melody_notes_all})
 
@@ -328,25 +304,28 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
     #   bass   -49 RMS                    → inaudible
     #   other  -21 RMS / 0 dB low-mid    → keys+melody+pad fine
     #   full   -17 RMS / +0.6 dBTP        → clipping
+    # Audit on Lofi-1 (seed 73) showed:
+    #   drums   -38 dB RMS  (way under)
+    #   bass    -40 dB RMS  (way under)
+    #   other   -23 dB RMS  (keys+melody+pad combined dominating, +15
+    #                        dB above drums)
+    # Re-tuning to shift the balance: pull drums + bass UP, keys + pad
+    # DOWN. Melody stays close to current.
     track_tools.mix_apply_reference({"track_id": drums_id,
                                       "genre": "lofi", "role": "drums",
-                                      "offset_db": +2})
-    # Bass: real samples are at unity output level, so the previous
-    # +18 dB hack (compensating for thin 4OSC) isn't needed when
-    # _install_lofi_bass_samples succeeded. Use a moderate +6 to match
-    # the lofi reference balance.
+                                      "offset_db": +8})    # was +2
     track_tools.mix_apply_reference({"track_id": bass_id,
                                       "genre": "lofi", "role": "bass",
-                                      "offset_db": +6 if using_real_bass else +18})
+                                      "offset_db": +10 if using_real_bass else +18})  # was +6
     track_tools.mix_apply_reference({"track_id": keys_id,
                                       "genre": "lofi", "role": "keys",
-                                      "offset_db": -8})
+                                      "offset_db": -14})   # was -8
     track_tools.mix_apply_reference({"track_id": melody_id,
                                       "genre": "lofi", "role": "melody",
-                                      "offset_db": +5})
+                                      "offset_db": +3})    # was +5
     track_tools.mix_apply_reference({"track_id": pad_id,
                                       "genre": "lofi", "role": "pad",
-                                      "offset_db": +8})
+                                      "offset_db": +2})    # was +8 — too thick
 
     # Pull master volume down 2 dB to give the limiter headroom.
     # Previous render hit +0.6 dBTP — clipping on every transient peak.
