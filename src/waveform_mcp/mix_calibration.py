@@ -85,9 +85,16 @@ PLUGIN_CHAIN_OFFSETS_DB: dict[tuple[str, ...], float] = {
     ("keys synth",):                -8.0,
     ("pad synth",):                 -8.0,
     ("bass synth",):                -8.0,
-    # ── 4OSC + per-track FX chains (compose_lofi_track bass + reverb) ──
+    ("synth bass",):                -8.0,
+    ("arp synth",):                 -8.0,
+    ("lead synth",):                -8.0,
+    ("pad b synth",):               -8.0,
+    # ── 4OSC + per-track FX chains ──
     ("lofi bass", "bass cleanup", "bass comp"): +2.0,
     ("keys synth", "plate reverb"): -8.0,
+    ("arp synth", "plate reverb"):  -8.0,
+    ("lead synth", "plate reverb"): -8.0,
+    ("pad b synth", "pad b hp"):    -8.0,
 }
 
 # When no plugin chain is known (track has no instrument plugins, or all
