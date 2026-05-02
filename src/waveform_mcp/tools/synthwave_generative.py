@@ -488,9 +488,12 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
             seed=seed * 67 + 7,
             sec_role_filter=("intro", "outro", "buildup", "breakdown",
                              "chorus", "chorus_a", "chorus_b", "bridge"),
-            rest_chance=0.45,   # less rest than before since we already
-                                # constrain by phrase
-            phrase_filter="odd",  # answer phrases — opposite of lead
+            # Aggressive: counter only plays on odd-indexed verse phrases
+            # AND each bar is then dice-rolled for rest. Combined effect
+            # was killing the layer (4 notes across whole song). Pull
+            # rest_chance way down so phrase-filtered bars actually play.
+            rest_chance=0.15,
+            phrase_filter="odd",
             chord_lookup=chord_at,
         )
         for n in counter_notes_all:
@@ -531,6 +534,158 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         if pad_b_notes:
             midi_tools.midi_notes_add({"clip_id": pad_b_clip, "notes": pad_b_notes})
 
+    # --- 9f. Harmony — parallel-3rd doubling of the Lead (35% chance)
+    # Doubles every lead note a major or minor 3rd up (whichever is in
+    # the current chord). Instant fullness without competing for space.
+    harmony_id = None
+    if rng.random() < 0.35 and lead_notes_filtered:
+        harmony_id = track_tools.track_add({"name": "Harmony", "kind": "midi"})["track_id"]
+        plugin_tools.plugin_add({"track_id": harmony_id, "type": "4OSC"})
+        harmony_clip = midi_tools.midi_clip_add({
+            "track_id": harmony_id, "name": "Harmony",
+            "start_beats": 0.0, "length_beats": total_bars * 4,
+        })["clip_id"]
+        harmony_notes = []
+        for n in lead_notes_filtered:
+            bar = int(n["start_beats"] // 4)
+            chord = chord_at(bar)
+            chord_pcs = {int(p) % 12 for p in [chord["bass_root"]] + list(chord["voicing"])}
+            # Try +4 (major 3rd) and +3 (minor 3rd); pick whichever
+            # lands in the chord's pitch-class set
+            harm_pitch = None
+            for interval in (4, 3, 7):    # 3rd up, then 5th up as fallback
+                cand = int(n["pitch"]) + interval
+                if cand % 12 in chord_pcs:
+                    harm_pitch = cand
+                    break
+            if harm_pitch is None:
+                continue
+            harmony_notes.append({
+                "pitch": int(harm_pitch),
+                "start_beats": float(n["start_beats"]),
+                "length_beats": float(n["length_beats"]),
+                "velocity": max(50, int(n["velocity"]) - 15),
+            })
+        if harmony_notes:
+            midi_tools.midi_notes_add({"clip_id": harmony_clip,
+                                        "notes": harmony_notes})
+
+    # --- 9g. Chimes — high-register chord-tone sparkle (50% chance)
+    # Adds the high-frequency content that's been missing from every
+    # render audit (-25 dB air band). Plays one 8th-note chord-tone ping
+    # per bar in MIDI 84-96 register.
+    chimes_id = None
+    if rng.random() < 0.5:
+        chimes_id = track_tools.track_add({"name": "Chimes", "kind": "midi"})["track_id"]
+        plugin_tools.plugin_add({"track_id": chimes_id, "type": "4OSC"})
+        chimes_clip = midi_tools.midi_clip_add({
+            "track_id": chimes_id, "name": "Chimes",
+            "start_beats": 0.0, "length_beats": total_bars * 4,
+        })["clip_id"]
+        chimes_notes = []
+        for bar in range(total_bars):
+            sec = _section_at_bar(sections_plan, bar)
+            pos = _bar_position_in_section(sections_plan, bar)
+            # Chimes ride through chorus + bridge + verse-second-half;
+            # silent in intro/outro/buildup/breakdown
+            if not sec or sec["role"] in ("intro", "outro", "buildup", "breakdown"):
+                continue
+            if not pos: continue
+            chord = chord_at(bar)
+            # Pick chord 5th in MIDI 84-95 range; if 5th sits low, use root
+            target_pc = (int(chord["bass_root"]) + 7) % 12
+            for cand in range(84, 96):
+                if cand % 12 == target_pc:
+                    pitch = cand
+                    break
+            else:
+                pitch = 84 + (int(chord["bass_root"]) % 12)
+            # One ping per bar on beat 1
+            chimes_notes.append({
+                "pitch": int(pitch),
+                "start_beats": float(bar * 4),
+                "length_beats": 1.5,
+                "velocity": 65,
+            })
+            # Sparkle on the "&" of beat 3 in chorus only
+            if sec["role"].startswith("chorus"):
+                chimes_notes.append({
+                    "pitch": int(pitch) + 5,    # add a 4th interval up
+                    "start_beats": float(bar * 4 + 2.5),
+                    "length_beats": 1.0,
+                    "velocity": 60,
+                })
+        if chimes_notes:
+            midi_tools.midi_notes_add({"clip_id": chimes_clip,
+                                        "notes": chimes_notes})
+
+    # --- 9h. Risers — synth FX sweep at section boundaries (40% chance)
+    # Long ascending pitch sweep on the bar BEFORE each chorus / bridge
+    # entry. Anticipation tool. Implemented as an 8-note ascending
+    # chromatic run on a separate track so it's distinct from the arp.
+    riser_id = None
+    if rng.random() < 0.4:
+        riser_id = track_tools.track_add({"name": "Riser", "kind": "midi"})["track_id"]
+        plugin_tools.plugin_add({"track_id": riser_id, "type": "4OSC"})
+        riser_clip = midi_tools.midi_clip_add({
+            "track_id": riser_id, "name": "Riser",
+            "start_beats": 0.0, "length_beats": total_bars * 4,
+        })["clip_id"]
+        riser_notes = []
+        # Find section boundaries leading into chorus/bridge
+        cursor_bar = 0
+        for sec_idx, sec in enumerate(sections_plan):
+            cursor_bar += sec["bars"]
+            # cursor_bar is now the start of the NEXT section
+            if sec_idx + 1 >= len(sections_plan):
+                break
+            next_sec = sections_plan[sec_idx + 1]
+            if next_sec["role"] not in ("chorus", "chorus_a", "chorus_b",
+                                         "bridge", "buildup"):
+                continue
+            # Place riser on the LAST bar of current section
+            riser_bar = cursor_bar - 1
+            if riser_bar < 0:
+                continue
+            # 8-note ascending chromatic from MIDI 60 → 67
+            for i in range(8):
+                riser_notes.append({
+                    "pitch": 60 + i,
+                    "start_beats": float(riser_bar * 4 + i * 0.5),
+                    "length_beats": 0.45,
+                    "velocity": 55 + i * 5,    # crescendo
+                })
+        if riser_notes:
+            midi_tools.midi_notes_add({"clip_id": riser_clip,
+                                        "notes": riser_notes})
+
+    # --- 9i. Tom fills — replace some snare-roll fills with tom rolls
+    # (always present). Adds drum-kit color beyond just kick/snare/hat
+    # already on the Drums track via direct note injection.
+    tom_fill_notes = []
+    cursor_bar = 0
+    for sec_idx, sec in enumerate(sections_plan):
+        sec_bars = sec["bars"]
+        if sec_idx + 1 < len(sections_plan) and sec_bars >= 4:
+            next_sec = sections_plan[sec_idx + 1]
+            # Half the time, replace the fill with a tom roll
+            if (sec["role"] not in ("intro", "outro")
+                    and next_sec["role"] in ("chorus", "chorus_a", "chorus_b")
+                    and rng.random() < 0.5):
+                fill_bar = cursor_bar + sec_bars - 1
+                # 16th-note tom roll on beats 3-4: 4 hits low → mid → high → low
+                tom_seq = [45, 48, 50, 48, 45, 50, 48, 45]    # low/mid/hi toms
+                for i, pitch in enumerate(tom_seq):
+                    tom_fill_notes.append({
+                        "pitch": pitch,
+                        "start_beats": float(fill_bar * 4 + 2 + i * 0.25),
+                        "length_beats": 0.2,
+                        "velocity": 80 + i * 4,
+                    })
+        cursor_bar += sec_bars
+    if tom_fill_notes:
+        midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": tom_fill_notes})
+
     # --- 10. Mix balance ---
     track_tools.mix_apply_reference({"track_id": drums_id,
                                       "genre": "synthwave", "role": "drums",
@@ -565,6 +720,21 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         track_tools.mix_apply_reference({"track_id": pad_b_id,
                                           "genre": "synthwave", "role": "pad",
                                           "offset_db": -8})
+    if harmony_id:
+        # Harmony sits 5 dB under Lead so Lead stays in front
+        track_tools.mix_apply_reference({"track_id": harmony_id,
+                                          "genre": "synthwave", "role": "lead",
+                                          "offset_db": -2})
+    if chimes_id:
+        # Chimes are top-end sparkle — sit forward but small
+        track_tools.mix_apply_reference({"track_id": chimes_id,
+                                          "genre": "synthwave", "role": "arp",
+                                          "offset_db": -3})
+    if riser_id:
+        # Risers are FX punctuation — let them peak
+        track_tools.mix_apply_reference({"track_id": riser_id,
+                                          "genre": "synthwave", "role": "fx",
+                                          "offset_db": +2})
 
     # Master pulled back so transients have headroom
     STORE.edit.master_volume_db = -2.0
@@ -578,6 +748,10 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "pluck":    pluck_id is not None,
         "counter":  counter_id is not None,
         "pad_b":    pad_b_id is not None,
+        "harmony":  harmony_id is not None,
+        "chimes":   chimes_id is not None,
+        "riser":    riser_id is not None,
+        "tom_fills": bool(tom_fill_notes),
     }
     return {
         "ok": True,
@@ -592,7 +766,8 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
         "arp_directions": "varies per 2-bar phrase",
         "chord_roots": [int(c["bass_root"]) for c in progression_chords],
         "optional_layers": optional_layers,
-        "track_count": 5 + sum(optional_layers.values()),
+        "track_count": 5 + sum(1 for k, v in optional_layers.items()
+                                if v and k != "tom_fills"),
     }
 
 
