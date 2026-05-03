@@ -543,6 +543,29 @@ def eq_tilt(edit: Edit, track_id: str, brightness: float = 0.0) -> dict:
     return {"track_id": track_id, "plugin_id": p.id}
 
 
+@op("track_gain", intent_template="Gain {db}dB on {track_id}")
+def track_gain(edit: Edit, track_id: str, db: float = 0.0) -> dict:
+    """Add a clean make-up gain stage to a track.
+
+    Use when the track fader is already at the +8 dB system cap but
+    you still need more loudness — this adds REAL post-fader gain,
+    so audible_level = chain + fader + db.
+
+    Implemented as a single-band Compressor with infinite threshold
+    (so it doesn't actually compress) and the requested makeup gain.
+    Range clamped to [-24, +24] dB.
+    """
+    db = max(-24.0, min(24.0, float(db)))
+    t = edit.track(track_id)
+    p = Plugin(id=_id("plg"), type="Compressor", name=f"Gain {db:+.1f}dB",
+               params={"threshold": +12.0,    # never trips
+                       "ratio": 1.0,           # no compression
+                       "attack": 5.0, "release": 100.0,
+                       "knee": 0.0, "outputDb": db})
+    t.plugins.append(p)
+    return {"track_id": track_id, "plugin_id": p.id, "db": db}
+
+
 @op("compress_glue", intent_template="Glue comp on {track_id}")
 def compress_glue(edit: Edit, track_id: str, amount: float = 0.5) -> dict:
     """Single-knob gentle bus compressor. amount ∈ 0..1 → ratio 1.5..4, threshold -8..-12."""

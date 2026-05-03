@@ -812,6 +812,58 @@ def _drum_kit_sounds() -> list[dict]:
     return sounds
 
 
+def _jazz_kit_sounds() -> list[dict]:
+    """Build a Jazz Kit by remapping 808 Kit samples to a jazz layout.
+
+    The 808 Kit lacks a ride cymbal — closed-hat (42) doubles for the
+    ride. This kit also exposes:
+      - 51 (ride cymbal) → Closed Hat sample
+      - 53 (ride bell)   → Cymbal sample (shorter decay)
+    Plus the standard kit notes work normally.
+
+    Until a real Jazz Kit sample pack is bundled, this is the best
+    approximation using factory samples.
+    """
+    base = _factory_presets_dir()
+    if base is None:
+        return []
+    kit_dir = base / "Drum Sampler"
+
+    mappings = [
+        # (midi_note, sample_filename, friendly_name)
+        (36, "808 Bass Drum 115.flac",   "Kick (soft)"),
+        (38, "808 Snare Drum 253.flac",  "Snare (brushed)"),
+        (37, "808 Rim Shot 1.flac",      "Cross-stick / Rimshot"),
+        (42, "808 Hihat Closed 1.flac",  "Closed Hat"),
+        (46, "808 Hihat Open 2.flac",    "Open Hat"),
+        (51, "808 Hihat Closed 1.flac",  "Ride"),     # remapped — closest sound
+        (53, "808 Cymbal 27.flac",       "Ride Bell"),
+        (49, "808 Cymbal 27.flac",       "Crash"),
+        (45, "808 Tom Low 44.flac",      "Low Tom"),
+        (48, "808 Tom Mid 44.flac",      "Mid Tom"),
+        (50, "808 Tom Hi 1.flac",        "Hi Tom"),
+    ]
+    sounds = []
+    for note, fname, name in mappings:
+        path = kit_dir / fname
+        if not path.exists():
+            continue
+        # Jazz Kit hits softer than rock/electronic — drop the gain
+        # 3 dB so the brushed feel translates without rebalancing
+        sounds.append({
+            "source": str(path),
+            "name": name,
+            "keyNote": note,
+            "minNote": note,
+            "maxNote": note,
+            "startTime": 0.0,
+            "gainDb": -3.0,
+            "pan": 0.0,
+            "openEnded": 1,
+        })
+    return sounds
+
+
 # ============================================================================
 # Section-based arrangement model — applied from the music theory research.
 # Each section has a bar range, a velocity scale (the "swell" curve), and a

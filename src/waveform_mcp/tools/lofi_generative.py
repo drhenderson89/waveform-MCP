@@ -45,6 +45,7 @@ from typing import Any
 from . import composition as comp_tools
 from . import drum_patterns as drum_tools
 from . import edit as edit_tools
+from . import instruments as instr_tools
 from . import melody as mel_tools
 from . import midi as midi_tools
 from . import plugins as plugin_tools
@@ -264,8 +265,12 @@ def compose_lofi_generative(args: dict[str, Any]) -> dict[str, Any]:
     midi_tools.midi_notes_add({"clip_id": keys_clip, "notes": keys_notes})
 
     # --- 7. Melody (per-section with fresh seed → variety) ---
+    # Pin Salamander Grand Piano (acoustic) for the melody — beats the
+    # bare 4OSC default-saw which made every lofi track sound like the
+    # same generic synth. Falls back to keys/piano if Salamander missing.
     melody_id = track_tools.track_add({"name": "Melody", "kind": "midi"})["track_id"]
-    plugin_tools.plugin_add({"track_id": melody_id, "type": "4OSC"})
+    instr_tools.equip_by_name(melody_id, "salamander grand piano v3",
+                               fallback_category="keys")
     mel_clip = midi_tools.midi_clip_add({
         "track_id": melody_id, "name": "Melody",
         "start_beats": 0.0, "length_beats": total_bars * 4,

@@ -117,6 +117,40 @@ TOOLS: list[dict[str, Any]] = [
                                                    "enum": ["lead_sheet", "nashville"],
                                                    "default": "lead_sheet"}}},
     },
+    {
+        "name": "render_and_audit",
+        "description": (
+            "Render the active edit to MP3, run the analyzer, and "
+            "return both paths plus a balance/rhythm summary in one "
+            "call. Replaces the manual revert→render→analyze chain."
+        ),
+        "inputSchema": {"type": "object",
+                        "properties": {
+                            "mp3_path": {"type": "string"},
+                            "bitrate": {"type": "string", "default": "256k"},
+                            "trim_trailing_silence": {"type": "boolean", "default": True},
+                            "revert_first": {"type": "boolean", "default": False},
+                        }},
+    },
+    {
+        "name": "compose_and_reload",
+        "description": (
+            "Dispatch one of jazz/synthwave/lofi generative composers "
+            "AND revert in Waveform with one call. Avoids the "
+            "compose-then-manually-revert dance during iteration."
+        ),
+        "inputSchema": {"type": "object", "required": ["composer", "out_path"],
+                        "properties": {
+                            "composer": {"type": "string",
+                                          "enum": ["jazz", "synthwave", "lofi"]},
+                            "out_path": {"type": "string"},
+                            "seed": {"type": "integer"},
+                            "tempo": {"type": "number"},
+                            "key_root": {"type": "string"},
+                            "key_mode": {"type": "string"},
+                            "target_seconds": {"type": "number"},
+                        }},
+    },
 ]
 
 
@@ -320,6 +354,115 @@ def edit_export_chord_chart(args: dict) -> dict:
     return {"ok": True, "path": out_path, "lines": len(lines)}
 
 
+def render_and_audit(args: dict) -> dict:
+    """Render the active edit to MP3, run the analyzer, return both
+    paths plus an audit summary in one call.
+
+    Replaces the 3-step manual chain (revert → render → analyze) that
+    was the most-repeated incantation across the session.
+
+    Args:
+      mp3_path: where to write the mp3 (passed to waveform_render_to_mp3)
+      bitrate: defaults to "256k"
+      trim_trailing_silence: defaults to True
+      revert_first: if True, call waveform_revert_to_saved before rendering
+        so a freshly-overwritten edit is reloaded (defaults False).
+
+    Returns: {ok, mp3, wav, duration_sec, band_energy_pct,
+              centroid_hz, syncopation, tempo_bpm, ...}
+    """
+    import sys
+    if sys.platform != "win32":
+        return {"ok": False, "error": "render_and_audit requires Windows + Waveform"}
+    from .waveform_workflows import waveform_render_to_mp3, waveform_revert_to_saved
+    from .import_song import _run_analyzer
+
+    if args.get("revert_first"):
+        waveform_revert_to_saved({})
+
+    render_args = {k: v for k, v in args.items()
+                   if k in ("mp3_path", "bitrate", "trim_trailing_silence",
+                            "render_timeout_seconds", "keep_wav")}
+    res = waveform_render_to_mp3(render_args)
+    if not res.get("ok"):
+        return {"ok": False, "error": "render failed",
+                 "render_result": res}
+
+    mp3 = res["mp3"]
+    data, info = _run_analyzer(mp3)
+    if data is None:
+        return {"ok": True, "mp3": mp3, "wav": res.get("wav"),
+                 "audit_error": info,
+                 "duration_sec": res.get("duration_after_trim_sec")}
+
+    t = data.get("timbre", {})
+    r = data.get("rhythm", {})
+    return {
+        "ok": True,
+        "mp3": mp3, "wav": res.get("wav"),
+        "duration_sec": res.get("duration_after_trim_sec"),
+        "band_energy_pct": t.get("band_energy_pct"),
+        "spectral_centroid_hz": t.get("spectral_centroid_mean"),
+        "harmonic_pct": t.get("harmonic_pct"),
+        "percussive_pct": t.get("percussive_pct"),
+        "tempo_bpm": r.get("global_bpm"),
+        "tempo_range": r.get("tempo_range"),
+        "syncopation": r.get("syncopation"),
+        "beat_regularity": r.get("beat_regularity"),
+        "analyzer_json": info,
+    }
+
+
+def compose_and_reload(args: dict) -> dict:
+    """Convenience: dispatch one of the registered composers AND
+    reload the resulting edit in Waveform with one call. Saves the
+    revert-after-overwrite friction.
+
+    Args:
+      composer: "jazz" | "synthwave" | "lofi"   (required)
+      out_path: target edit path (required)
+      ...all other args forwarded to the composer
+
+    Returns: {ok, compose_result, reload_ok}
+    """
+    composer = args.get("composer")
+    if composer not in ("jazz", "synthwave", "lofi"):
+        return {"ok": False,
+                 "error": f"composer must be jazz/synthwave/lofi, got {composer!r}"}
+    if not args.get("out_path"):
+        return {"ok": False, "error": "missing out_path"}
+
+    if composer == "jazz":
+        from .jazz_generative import compose_jazz_generative as fn
+    elif composer == "synthwave":
+        from .synthwave_generative import compose_synthwave_generative as fn
+    else:
+        from .lofi_generative import compose_lofi_generative as fn
+
+    forward = {k: v for k, v in args.items() if k != "composer"}
+    compose_result = fn(forward)
+    if not compose_result.get("ok"):
+        return {"ok": False, "compose_result": compose_result}
+
+    reload_ok = False
+    reload_err = None
+    try:
+        import sys
+        if sys.platform == "win32":
+            from .waveform_workflows import waveform_revert_to_saved
+            r = waveform_revert_to_saved({})
+            reload_ok = bool(r.get("ok"))
+            if not reload_ok:
+                reload_err = r.get("error")
+    except Exception as e:
+        reload_err = str(e)
+
+    return {"ok": True,
+            "compose_result": compose_result,
+            "reload_ok": reload_ok,
+            **({"reload_error": reload_err} if reload_err else {})}
+
+
 HANDLERS = {
     "snapshot_save":            snapshot_save,
     "snapshot_recall":          snapshot_recall,
@@ -330,4 +473,6 @@ HANDLERS = {
     "tool_history":             tool_history,
     "compose_variations":       compose_variations,
     "edit_export_chord_chart":  edit_export_chord_chart,
+    "render_and_audit":         render_and_audit,
+    "compose_and_reload":       compose_and_reload,
 }

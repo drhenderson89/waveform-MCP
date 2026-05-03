@@ -350,6 +350,52 @@ def bassline_generate(args: dict) -> dict:
                 notes.append({"pitch": root + interval, "start_beats": b + i,
                               "length_beats": 0.95, "velocity": 86})
 
+        elif feel == "walking_jazz":
+            # Authentic jazz walking bass — picks one of 7 patterns per
+            # bar from the Paul Chambers / Ron Carter vocabulary
+            # (1-3-5-approach, 1-3-6-5, 1-3-6-b6, triplet on beat 4,
+            # octave drop, ghost 8th, 1-5-3-approach inversion).
+            # Pattern index varies per bar so the line never repeats.
+            si = scale_intervals
+            third  = si[2] if len(si) > 2 else 4
+            fifth  = si[4] if len(si) > 4 else 7
+            sixth  = si[5] if len(si) > 5 else 9
+            bar_len = 4    # assumes 4/4
+            n_bars = max(1, int(chord_dur // bar_len))
+            chord_seed = int(args.get("seed", 0)) + chord_idx * 11
+            for inner_bar in range(n_bars):
+                bar_b = b + inner_bar * bar_len
+                next_root = roots[(chord_idx + 1) % len(roots)] \
+                    if inner_bar == n_bars - 1 else root
+                approach = next_root - 1 if next_root > root else next_root + 1
+                h = (chord_seed + inner_bar * 13 + 5) % 7
+                if h == 0:        # 1-3-5-approach
+                    pat = [(0, root), (1, root+third), (2, root+fifth), (3, approach)]
+                elif h == 1:      # 1-3-6-5
+                    pat = [(0, root), (1, root+third), (2, root+sixth), (3, root+fifth)]
+                elif h == 2:      # 1-3-6-b6
+                    pat = [(0, root), (1, root+third), (2, root+sixth), (3, root+8)]
+                elif h == 3:      # 1-3-5 + chromatic triplet on beat 4
+                    pat = [(0, root), (1, root+third), (2, root+fifth)]
+                    a2 = approach - (1 if next_root > root else -1)
+                    for i, p in enumerate([a2, approach, next_root]):
+                        notes.append({"pitch": p,
+                                       "start_beats": bar_b + 3.0 + i*(1.0/3.0),
+                                       "length_beats": 0.30, "velocity": 78})
+                elif h == 4:      # octave drop
+                    pat = [(0, root), (1, root+third), (2, root+fifth), (3, root-12)]
+                elif h == 5:      # ghost 8th
+                    pat = [(0, root), (1, root+third), (2, root+fifth), (3, approach)]
+                    notes.append({"pitch": approach - (1 if next_root > root else -1),
+                                   "start_beats": bar_b + 3.5,
+                                   "length_beats": 0.25, "velocity": 50})
+                else:             # 1-5-3-approach inversion
+                    pat = [(0, root), (1, root+fifth), (2, root+third), (3, approach)]
+                for off, p in pat:
+                    v = 92 if off == 0 else (76 if off % 2 == 0 else 72)
+                    notes.append({"pitch": p, "start_beats": bar_b + off,
+                                   "length_beats": 0.85, "velocity": v})
+
         elif feel == "dub":
             # Dub bass: root on 1, off-beat root-up-fifth on 2.5
             for seg in range(int(chord_dur / 4)):

@@ -267,12 +267,19 @@ def progression_generate(args: dict) -> dict:
         is_borrowed = allow_borrowed and deg in (3, 6, 7) and rng.random() < 0.10
         info = _chord_pitches_for_degree(root, mode, deg, is_borrowed, octave)
         roman = _degree_to_roman(deg, info["quality"], is_borrowed)
+        quality = info["quality"]
+        # JAZZ + BLUES: V is ALWAYS dominant 7 (b7 above root), not maj7.
+        # Tagging here lets downstream voicing code add the right 7th.
+        # Without this fix, V chord voiced with a major 7 clashes with
+        # the I and reads as "out of tune."
+        if style in ("jazz", "blues") and deg == 5 and quality == "maj":
+            quality = "dom7"
         chords.append({
             "roman": roman,
             "degree": deg,
             "root_midi": info["root_midi"],
             "chord_pitches": info["chord_pitches"],
-            "quality": info["quality"],
+            "quality": quality,
             "borrowed": is_borrowed,
         })
     return {"ok": True, "chords": chords, "n_chords": len(chords)}

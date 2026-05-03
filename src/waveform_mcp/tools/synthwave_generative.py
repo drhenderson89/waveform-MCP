@@ -290,86 +290,20 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
             })
     midi_tools.midi_notes_add({"clip_id": pad_clip, "notes": pad_notes})
 
-    # --- 8. Arp — pick a pluck-friendly preset (Pulse/Triangle/Poly/...) ---
-    arp_id = track_tools.track_add({"name": "Arp", "kind": "midi"})["track_id"]
-    chosen_arp = instr_tools.equip(arp_id, "pluck", rng, fallback="lead")
-    arp_clip = midi_tools.midi_clip_add({
-        "track_id": arp_id, "name": "Arp",
-        "start_beats": 0.0, "length_beats": total_bars * 4,
-    })["clip_id"]
-    # Arp variety. Earlier version had two bugs and zero per-bar
-    # variation:
-    #   * rate_beats / octave_offset args silently ignored (arp_pattern
-    #     uses `rate` (string) and `octaves` (int)) — every bar fell
-    #     through to default sixteenth/up/octaves=2.
-    #   * Direction was section-fixed; whole sections played identical
-    #     patterns.
-    # Now: rate per section (eighth in verse, sixteenth in chorus,
-    # triplet in bridge), direction CHANGES every 2-bar phrase within
-    # a section, octave count flips between 1 and 2 per phrase, and
-    # chorus rolls "octave_alternate" or "random" for extra motion.
-    arp_notes = []
-    section_rate = {
-        "intro": "eighth",
-        "verse": "eighth",
-        "chorus": "sixteenth",
-        "chorus_a": "sixteenth",
-        "chorus_b": "sixteenth",
-        "bridge": "triplet",
-        "buildup": "sixteenth",
-        "breakdown": "eighth",
-        "outro": "eighth",
-    }
-    # Per-section direction pool — picked from each 2-bar phrase
-    section_dir_pool = {
-        "intro":     ["up"],
-        "verse":     ["up", "up_down"],
-        "chorus":    ["up_down", "octave_alternate", "random"],
-        "chorus_a":  ["up_down", "octave_alternate"],
-        "chorus_b":  ["random", "up_down", "octave_alternate"],
-        "bridge":    ["down", "down_up"],
-        "buildup":   ["up", "up"],     # straight ascent for tension
-        "breakdown": ["down"],
-        "outro":     ["down", "down"],
-    }
-    for bar in range(total_bars):
-        sec = _section_at_bar(sections_plan, bar)
-        pos = _bar_position_in_section(sections_plan, bar)
-        if sec and pos and not _track_active_at_bar("arp", sec["role"], pos[0], pos[1]):
-            continue
-        chord = chord_at(bar)
-        section_role = sec["role"] if sec else "verse"
-        rate = section_rate.get(section_role, "eighth")
-        # Phrase index = bar // 2, picks a direction from the pool.
-        phrase_idx = bar // 2
-        pool = section_dir_pool.get(section_role, ["up"])
-        direction = pool[phrase_idx % len(pool)]
-        # Octave count alternates per phrase (1 octave for tighter feel,
-        # 2 for sweeping feel)
-        octaves = 1 + (phrase_idx % 2)
-        try:
-            r = mel_tools.arp_pattern({
-                "chord_pitches": [chord["bass_root"] + 12] + list(chord["voicing"]),
-                "length_beats": 4.0,
-                "rate": rate,
-                "direction": direction,
-                "octaves": octaves,
-                "start_beats": float(bar * 4),
-                "velocity_base": 80,
-            })
-            arp_notes.extend(r.get("notes", []))
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                "arp_pattern failed at bar %d: %s", bar, e)
-    midi_tools.midi_notes_add({"clip_id": arp_clip, "notes": arp_notes})
+    # --- 8. (Arp removed — formulaic ascending arps were the same every
+    # song. The Piano now carries the melody role; if anything fills the
+    # mid-rhythm space later, it should be a section-aware decoration,
+    # not a constant 8th/16th machine.)
+    arp_id = None
+    chosen_arp = None
 
-    # --- 9. Lead — pick a real lead patch (Stab/V-ger/Tech 5th/...) ---
-    lead_id = track_tools.track_add({"name": "Lead", "kind": "midi"})["track_id"]
-    # 25% of the time roll a real electric guitar instead of a synth lead
-    lead_category = "guitar" if rng.random() < 0.25 else "lead"
+    # --- 9. Lead — PIANO. Acoustic piano carries the melody, replacing
+    # the synth lead that everything else used to compete with. Falls
+    # back to e-piano / keys, then to a synth lead only as last resort.
+    lead_id = track_tools.track_add({"name": "Lead Piano", "kind": "midi"})["track_id"]
+    lead_category = "piano"
     chosen_lead = instr_tools.equip(lead_id, lead_category, rng,
-                                     fallback="lead")
+                                     fallback="keys")
     lead_clip = midi_tools.midi_clip_add({
         "track_id": lead_id, "name": "Lead",
         "start_beats": 0.0, "length_beats": total_bars * 4,
@@ -697,58 +631,160 @@ def compose_synthwave_generative(args: dict[str, Any]) -> dict[str, Any]:
     if tom_fill_notes:
         midi_tools.midi_notes_add({"clip_id": drum_clip, "notes": tom_fill_notes})
 
+    # --- 9j. Keys — chord comping (e-piano / wurli, NOT acoustic piano).
+    # The acoustic piano is now the LEAD (carries the melody), so this
+    # comping track uses a contrasting electric keys voice. Plays chord
+    # voicing on beats 1 and 3 every bar in MIDI 55-72.
+    piano_id = track_tools.track_add({"name": "Keys", "kind": "midi"})["track_id"]
+    instr_tools.equip(piano_id, "keys", rng, fallback="strings")
+    piano_clip = midi_tools.midi_clip_add({
+        "track_id": piano_id, "name": "Piano",
+        "start_beats": 0.0, "length_beats": total_bars * 4,
+    })["clip_id"]
+    piano_notes = []
+    for bar in range(total_bars):
+        sec = _section_at_bar(sections_plan, bar)
+        if not sec or sec["role"] in ("intro", "outro", "buildup", "breakdown"):
+            continue
+        chord = chord_at(bar)
+        # Build a 3-note voicing in MIDI 55-72 range
+        root = int(chord["bass_root"])
+        # Drop voicing into mid register
+        voicing_pcs = [(root) % 12, (root + 4 if "voicing" not in chord else (chord["voicing"][0]) % 12),
+                       (chord["voicing"][1] if len(chord.get("voicing", [])) > 1 else root + 7) % 12]
+        voiced = []
+        for pc in voicing_pcs:
+            for cand in range(55, 73):
+                if cand % 12 == pc:
+                    voiced.append(cand); break
+        # Beat 1 and beat 3 hits
+        for beat_offset, vel in ((0.0, 75), (2.0, 65)):
+            for p in voiced:
+                piano_notes.append({
+                    "pitch": int(p),
+                    "start_beats": float(bar * 4 + beat_offset),
+                    "length_beats": 1.9,
+                    "velocity": vel,
+                })
+    if piano_notes:
+        midi_tools.midi_notes_add({"clip_id": piano_clip, "notes": piano_notes})
+
+    # --- 9k. Violin — always-on sustained line (chord 5th)
+    # Acoustic strings color over the synth pad. Arp is back to a synth
+    # pluck, so the violin can return to playing real violin.
+    violin_id = track_tools.track_add({"name": "Violin", "kind": "midi"})["track_id"]
+    instr_tools.equip(violin_id, "violin", rng, fallback="strings")
+    violin_clip = midi_tools.midi_clip_add({
+        "track_id": violin_id, "name": "Violin",
+        "start_beats": 0.0, "length_beats": total_bars * 4,
+    })["clip_id"]
+    violin_notes = []
+    for bar in range(total_bars):
+        sec = _section_at_bar(sections_plan, bar)
+        if not sec:
+            continue
+        # Violin rides through verse-back-half + chorus + bridge
+        if sec["role"] in ("intro", "outro", "buildup", "breakdown"):
+            continue
+        pos = _bar_position_in_section(sections_plan, bar)
+        if pos and sec["role"].startswith("verse") and pos[0] < pos[1] // 2:
+            # Skip first half of verses to leave space
+            continue
+        chord = chord_at(bar)
+        target_pc = (int(chord["bass_root"]) + 7) % 12     # 5th
+        for cand in range(67, 80):
+            if cand % 12 == target_pc:
+                pitch_5 = cand; break
+        else:
+            pitch_5 = 67 + (int(chord["bass_root"]) % 12)
+        # Sustained whole note + a swelled half-note on beat 3 in chorus
+        violin_notes.append({
+            "pitch": int(pitch_5),
+            "start_beats": float(bar * 4),
+            "length_beats": 4.0,
+            "velocity": 60,
+        })
+        if sec["role"].startswith("chorus"):
+            # Add a melodic 3rd above to thicken in chorus
+            target_pc3 = (int(chord["bass_root"]) + 11) % 12
+            for cand in range(72, 84):
+                if cand % 12 == target_pc3:
+                    pitch_3 = cand; break
+            else:
+                pitch_3 = pitch_5 + 4
+            violin_notes.append({
+                "pitch": int(pitch_3),
+                "start_beats": float(bar * 4 + 2.0),
+                "length_beats": 2.0,
+                "velocity": 55,
+            })
+    if violin_notes:
+        midi_tools.midi_notes_add({"clip_id": violin_clip, "notes": violin_notes})
+
     # --- 10. Mix balance ---
+    # Calibrated against analyzer of seed-16151542:
+    # 80% of energy was below 250Hz (Sub Bass 57%, Bass 23%); Mid 3.5%,
+    # Upper Mid 0.34%, Presence 0.09%, Brilliance/Air ~0%. Spectral
+    # centroid 2088 Hz vs synthwave norm ~3200 Hz. Drums only 7.7%
+    # percussive. Lead was buried — arp's harmonics dominated the
+    # midrange so the ear treated arp as the melody.
+    #
+    # Strategy: slash Sub Bass + Bass, push Drums forward, boost Lead
+    # so it owns the mid, lift everything that adds presence/air
+    # (piano, violin, chimes).
     track_tools.mix_apply_reference({"track_id": drums_id,
                                       "genre": "synthwave", "role": "drums",
-                                      "offset_db": +2})
+                                      "offset_db": +6})    # +2 → +6 (was 7.7% energy)
     track_tools.mix_apply_reference({"track_id": bass_id,
                                       "genre": "synthwave", "role": "bass",
-                                      "offset_db": +6})
+                                      "offset_db": -2})    # +6 → -2 (Bass band was 23%)
     track_tools.mix_apply_reference({"track_id": pad_id,
                                       "genre": "synthwave", "role": "pad",
-                                      "offset_db": +2})
-    track_tools.mix_apply_reference({"track_id": arp_id,
-                                      "genre": "synthwave", "role": "arp",
-                                      "offset_db": 0})
+                                      "offset_db": 0})     # +2 → 0
+    # (Arp track removed — no mix line for it)
     track_tools.mix_apply_reference({"track_id": lead_id,
                                       "genre": "synthwave", "role": "lead",
-                                      "offset_db": +3})
+                                      "offset_db": +6})    # piano lead — slightly less hot than synth
     if sub_id:
         track_tools.mix_apply_reference({"track_id": sub_id,
                                           "genre": "synthwave", "role": "sub_bass",
-                                          "offset_db": +6})
+                                          "offset_db": -8})   # +6 → -8 (Sub Bass was 57%)
     if pluck_id:
-        # Pluck is decorative — sit it under the arp
         track_tools.mix_apply_reference({"track_id": pluck_id,
                                           "genre": "synthwave", "role": "arp",
-                                          "offset_db": -4})
+                                          "offset_db": -10})
     if counter_id:
         track_tools.mix_apply_reference({"track_id": counter_id,
                                           "genre": "synthwave", "role": "counter",
-                                          "offset_db": +2})
+                                          "offset_db": -2})   # +2 → -2 (sit under lead)
     if pad_b_id:
-        # Pad B is a glue layer — barely-there
         track_tools.mix_apply_reference({"track_id": pad_b_id,
                                           "genre": "synthwave", "role": "pad",
-                                          "offset_db": -8})
+                                          "offset_db": -12})  # -8 → -12 (less mud)
     if harmony_id:
-        # Harmony sits 5 dB under Lead so Lead stays in front
         track_tools.mix_apply_reference({"track_id": harmony_id,
                                           "genre": "synthwave", "role": "lead",
                                           "offset_db": -2})
     if chimes_id:
-        # Chimes are top-end sparkle — sit forward but small
+        # Brilliance/Air bands were 0% — chimes lift the top octave
         track_tools.mix_apply_reference({"track_id": chimes_id,
                                           "genre": "synthwave", "role": "arp",
-                                          "offset_db": -3})
+                                          "offset_db": +5})   # -3 → +5
     if riser_id:
-        # Risers are FX punctuation — let them peak
         track_tools.mix_apply_reference({"track_id": riser_id,
                                           "genre": "synthwave", "role": "fx",
                                           "offset_db": +2})
+    # Keys (e-piano comping) — sits well under the piano lead
+    track_tools.mix_apply_reference({"track_id": piano_id,
+                                      "genre": "synthwave", "role": "keys",
+                                      "offset_db": -1})       # comp under lead
+    track_tools.mix_apply_reference({"track_id": violin_id,
+                                      "genre": "synthwave", "role": "strings",
+                                      "offset_db": +3})
 
-    # Master pulled back so transients have headroom
-    STORE.edit.master_volume_db = -2.0
+    # Master pulled back so transients have headroom and the song can
+    # breathe. Earlier -2 was clipping with this many layers.
+    STORE.edit.master_volume_db = -5.0
 
     # --- 11. Save ---
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1082,3 +1118,111 @@ TOOLS = [{
         },
     },
 }]
+
+
+# --------------------------------------------------------------------------- #
+# Arp profile generator                                                       #
+# --------------------------------------------------------------------------- #
+
+
+def _build_arp_notes(profile: str, total_bars: int, sections_plan,
+                     chord_at, _sec_at, _bar_pos, _track_active, rng,
+                     mel_tools) -> list[dict]:
+    """One of six rhythmically distinct arp patterns, picked per song."""
+    notes: list[dict] = []
+    for bar in range(total_bars):
+        sec = _sec_at(sections_plan, bar)
+        pos = _bar_pos(sections_plan, bar)
+        if sec and pos and not _track_active("arp", sec["role"], pos[0], pos[1]):
+            continue
+        chord = chord_at(bar)
+        chord_pitches = [chord["bass_root"] + 12] + list(chord["voicing"])
+        bar_start = float(bar * 4)
+
+        if profile == "classic_8th":
+            try:
+                r = mel_tools.arp_pattern({
+                    "chord_pitches": chord_pitches, "length_beats": 4.0,
+                    "rate": "eighth", "direction": "up", "octaves": 1,
+                    "start_beats": bar_start, "velocity_base": 75,
+                })
+                notes.extend(r.get("notes", []))
+            except Exception:
+                pass
+
+        elif profile == "broken_16th":
+            # 16th rhythm mask: 1.011.011.011.0.1 (X = hit, . = rest)
+            mask = [1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1]
+            cp = chord_pitches
+            for i, hit in enumerate(mask):
+                if not hit:
+                    continue
+                pitch = cp[i % len(cp)]
+                notes.append({
+                    "pitch": int(pitch),
+                    "start_beats": bar_start + i * 0.25,
+                    "length_beats": 0.22,
+                    "velocity": 75 if i % 4 == 0 else 65,
+                })
+
+        elif profile == "off_beat":
+            # Only the "&" of each beat — sparse, syncopated
+            cp = chord_pitches
+            for i in range(4):
+                pitch = cp[i % len(cp)]
+                notes.append({
+                    "pitch": int(pitch),
+                    "start_beats": bar_start + i + 0.5,
+                    "length_beats": 0.45,
+                    "velocity": 70,
+                })
+
+        elif profile == "two_note_pulse":
+            # Ping-pong between root and fifth, 8th notes, octave varies
+            root = chord["bass_root"] + 12
+            fifth = chord["bass_root"] + 19
+            pattern = [root, fifth, root + 12, fifth, root, fifth + 12, root, fifth]
+            for i, p in enumerate(pattern):
+                notes.append({
+                    "pitch": int(p),
+                    "start_beats": bar_start + i * 0.5,
+                    "length_beats": 0.45,
+                    "velocity": 70 if i % 2 == 0 else 60,
+                })
+
+        elif profile == "triplet_swirl":
+            # 8th-note triplets — 12 hits per bar, up_down shape
+            cp = chord_pitches + chord_pitches[::-1][1:-1]
+            for i in range(12):
+                pitch = cp[i % len(cp)]
+                notes.append({
+                    "pitch": int(pitch),
+                    "start_beats": bar_start + i * (4.0 / 12.0),
+                    "length_beats": 4.0 / 12.0 - 0.02,
+                    "velocity": 70,
+                })
+
+        elif profile == "chord_tone_sparse":
+            # 4 hits per bar at irregular positions: 1, 1.75, 2.5, 3.25
+            offsets = [0.0, 1.75, 2.5, 3.25]
+            cp = chord_pitches
+            for i, off in enumerate(offsets):
+                pitch = cp[i % len(cp)]
+                notes.append({
+                    "pitch": int(pitch),
+                    "start_beats": bar_start + off,
+                    "length_beats": 0.5,
+                    "velocity": 75,
+                })
+        else:
+            # Fallback: classic 8th
+            try:
+                r = mel_tools.arp_pattern({
+                    "chord_pitches": chord_pitches, "length_beats": 4.0,
+                    "rate": "eighth", "direction": "up", "octaves": 1,
+                    "start_beats": bar_start, "velocity_base": 75,
+                })
+                notes.extend(r.get("notes", []))
+            except Exception:
+                pass
+    return notes

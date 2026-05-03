@@ -169,6 +169,8 @@ Four layers, each with a clear contract:
 `tool_history(last_n)` — list recently-called tools (auto-recorded by the @op decorator)
 `edit_save_stem(track_names, out_path)` — save a stem-mix copy with named tracks soloed
 `edit_export_chord_chart(out_path, format)` — text chord chart from markers + key
+**`render_and_audit(mp3_path, revert_first?)`** — render → mp3 → analyze → return paths + balance/rhythm summary in ONE call. Replaces the manual revert→render→analyze chain that was the most-repeated incantation during iteration.
+**`compose_and_reload(composer, out_path, ...)`** — dispatch jazz/synthwave/lofi composer AND `waveform_revert_to_saved` in one call. Avoids the compose-then-manually-revert dance.
 
 ### MIDI export (`midi_export.py`)
 `edit_export_midi(out_path)` — Standard MIDI File (format 1) with one track per Edit MIDI track, plus tempo + time-sig in track 0.
@@ -189,15 +191,27 @@ The data behind these:
 - Velocity / rhythm maps (swing ratios, accent bumps, ghost-note ranges)
 - 13 songwriting heuristics (rule-of-3, contrast-required, surprise quota, …)
 - 7 surprise devices (truck-driver modulation, deceptive cadence, …)
-- **Mix balance reference table** — 7 genres × 14 roles, fully annotated
+- **Mix balance reference table** — 14 genres × ~14 roles, fully annotated. Genres: pop / rock / metal / synthwave / lofi / hip_hop / edm / cinematic / ambient / **jazz / jazz_standard / rnb / country / folk / orchestral**.
 
-### Composers (`composer.py`, `lofi_generative.py`)
+`progression_generate(style="jazz")` now correctly tags V chords as `quality="dom7"` so downstream voicing produces dominant 7 (b7) instead of major 7 — the V-as-maj7 voicing was a recurring out-of-tune source.
+
+### Composers (`composer.py`, `lofi_generative.py`, `synthwave_generative.py`, `jazz_generative.py`)
 - `compose_lofi_track` — 32-bar lofi with drums, bass, keys, pad, melody, counter; section-aware velocity envelopes; tempo automation; lofi master chain. Accepts an optional `chord_progression` arg to override the default Fmaj7-Am7-Dm7-Cmaj7 vocabulary.
-- `compose_lofi_generative` — *generative* lofi composer that drives `progression_generate`, `arrangement_plan`, `drum_pattern`, `melody_generate`, and `bassline_generate`. Every seed produces a meaningfully different song: different chords, section layout, drum density, melody contour, bass feel, tempo. **Bass is locked to kick onsets** for proper rhythm-section meshing; **melody is quantized to 8th-note grid** so it lines up with drums; uses real multi-sample bass guitar when factory samples are available.
-- `compose_synthwave_track` — 64-bar synthwave with 7 tracks; 9-section form (intro/verse/chorus/verse/chorus/bridge/buildup/chorusFinal/outro); per-section bass feels (half-time / 8th-pump / walking); section-keyed arp themes; sidechain-style filter pump; section markers; clip fades
-- `compose_djent_track` — synthetic progressive-metal track with 4OSC-driven rhythm guitars (no VSTs needed)
-- `compose_djent_real` — full progressive-metal arrangement using bundled VST amp sims (sforzando + Ignite Anvil + Mercuriall MT-A + TSC). 9-section form including a buildup and 8-bar guitar solo. Uses real metal samples for the kit.
-- `compose_rainstorm` — ambient soundscape with rain + wind + lowpassed-distant thunder; per-clip gain randomization; offset trim; track FX
+- `compose_lofi_generative` — *generative* lofi composer that drives `progression_generate`, `arrangement_plan`, `drum_pattern`, `melody_generate`, and `bassline_generate`. Every seed produces a meaningfully different song. **Bass locked to kick onsets** for rhythm-section meshing; **melody quantized to 8th-note grid**; **melody pinned to Salamander Grand Piano** instead of bare 4OSC default-saw; real multi-sample bass guitar when factory samples available.
+- `compose_synthwave_generative` — generative synthwave composer with 4 always-on layers (drums, bass, pad, lead) + 7 optional layers per seed roll (sub-bass, pluck, counter, pad B, harmony, chimes, riser); section-aware harmonic variation (chorus V7 sub, bridge modulation); layer-by-layer build through intro/outro; lead/counter call-and-response; tom fills before chorus entries; 6 distinct arp profiles (classic 8th, broken 16th, off-beat, two-note pulse, triplet swirl, chord-tone sparse) so back-to-back songs sound different.
+- **`compose_jazz_generative`** — jazz/jaunty composer with 5 tracks (drums, upright bass, Rhodes comp, piano lead, sax counter). Authentic walking bass library (7 patterns from Paul Chambers / Ron Carter vocabulary: 1-3-5-approach, 1-3-6-5, 1-3-6-b6, triplet on beat 4, octave drop, ghost 8th, 1-5-3 inversion). Salamander Grand piano lead with **call-and-response motif structure** (anchored downbeats, syncopated steps, octave-lifted climax phrases, contour-inverted variations). Drums **comp for the soloist** — ghost rim shots on piano off-beats during solo phrases, kick drops on beat 3, ride thinned, crash on entry. Per-section bass feels (two-feel for heads, walking for blowing, anticipations for transitions, chromatic at section boundaries). Pizzicato VSCO Contrabass with sample-range normalization. AABA form (intro/A1/A2/B/A3/[A4/B2/A5]/outro depending on length).
+- `compose_synthwave_track` — older 64-bar synthwave with 7 tracks; 9-section form; per-section bass feels; section-keyed arp themes; sidechain-style filter pump
+- `compose_djent_track` / `compose_djent_real` — progressive-metal composers (synthetic 4OSC vs full VST amp-sim chain)
+- `compose_rainstorm` — ambient soundscape with rain + wind + lowpassed-distant thunder
+
+### Ensemble cohesion (`ensemble.py`)
+Shared cross-genre primitives that prevent the "puzzle glued together" feeling where tracks sound great alone but don't mesh:
+- `section_at_bar(plan, bar)` / `section_start_bar(plan, role)` / `bar_in_phrase(plan, bar)` — shared section/phrase position math
+- `is_solo_phrase(plan, bar)` — every 3rd & 4th of each 4-phrase cycle is a "solo phrase" where the lead peaks (octave-lifted/ornamented). Drums comp louder, bass walks chromatic, rhodes lays sparser.
+- `section_dynamic_scale(plan, bar)` — velocity multiplier per section role for ensemble breathing (intro 0.55 → A1 0.85 → B 1.05 → outro 0.55). Apply uniformly to drums/bass/keys/lead.
+- `scale_velocities(notes, plan)` — bulk-apply the dynamic curve to a note list.
+- `comp_for_lead_drums(lead_notes, plan, total_bars)` — generate a drum part that responds to the soloist: ghost rim shots on lead off-beats during solo phrases, phrase-end tom fills, crash on solo entry, sparse ride during peaks.
+- `ensemble_dynamics` (MCP tool) — return per-section velocity multipliers as data.
 
 ### Reference-driven composition (`composition_spec.py`, `reference_adapter.py`, `tools/compose_from_spec.py`, `tools/import_song.py`)
 - `analyze_to_spec(audio_path)` — runs music-analyzer on any audio file, returns a `CompositionSpec` dict (tempo, key, sections, chord progression, instrumentation) without writing any edit. Use to inspect / hand-edit the spec before composing.
@@ -362,6 +376,8 @@ PLUGIN_CHAIN_OFFSETS_DB = {
 }
 ```
 
+The table is **bulk-seeded at registry-build time** — every preset known to the instrument registry (94 entries: Salamander Grand variants, all VSCO instruments, all 4OSC presets) gets a sensible default chain offset so the calibrator stops emitting "no match → -10 dB default" warnings. Manual entries in the table take precedence; bulk-seeding only fills gaps. New presets equipped at runtime auto-register too.
+
 `mix_apply_reference(track_id, genre, role)` now does:
 
 ```
@@ -455,6 +471,10 @@ The MCP detects installed deps and uses them when available; without them the pi
 - Singing-synth integration (Sinsy / SynthV Lite) so `compose_from_reference` can reproduce vocal melodies
 - Voice leading between Keys and Melody so they don't clash on shared scale degrees
 - Drum-pattern variation per section (fills on section boundaries, ghost-note humanization)
+- Real Jazz Kit sample pack (current `_jazz_kit_sounds()` remaps 808 Kit samples — fine but limited)
+- Per-stem loudness analysis driven by htdemucs (currently only band-energy %; can't tell "is bass quiet, or just in the wrong frequencies")
+- `audition_preset(preset_name, chord)` quick-listen tool — one-click preview before committing to a song
+- `compose_with_iteration(genre, target_seconds, max_iter)` — auto-render, auto-analyze, auto-tune mix offsets toward genre targets in a loop
 
 ---
 

@@ -251,6 +251,47 @@ PATTERNS: dict[tuple[str, str], dict[int, list[tuple[float, int]]]] = {
     ("any", "crash_only"): {
         49: [(0.0, 110)],
     },
+
+    # =================== JAZZ ===================
+    # Light brushed jazz kit. Kick on 1 & 3 (soft), snare on 2 & 4 (or
+    # rim shots), ride cymbal carries the swing pulse with the classic
+    # "ding-DA-da, ding-DA-da" pattern (8th-note skip on the "& of 2"
+    # and "& of 4"). 808 Kit lacks a ride cymbal so we use closed hat
+    # (note 42) — composers using a real Jazz Kit can remap to ride.
+    ("jazz", "verse"): {
+        36: [(0.0, 78), (2.0, 75)],                          # soft kick 1 & 3
+        38: [(1.0, 70), (3.0, 70)],                          # brushed snare 2 & 4
+        42: [(0.0, 65), (1.0, 60), (1.66, 50),
+             (2.0, 65), (3.0, 60), (3.66, 50)],              # ride: ding-DA-da pattern
+    },
+    ("jazz", "chorus"): {
+        36: [(0.0, 88), (2.0, 85)],
+        38: [(1.0, 85), (3.0, 85)],
+        37: [(2.5, 60)],                                     # rim ghost on "& of 3"
+        42: [(0.0, 78), (1.0, 70), (1.66, 60),
+             (2.0, 78), (3.0, 70), (3.66, 60)],
+    },
+    ("jazz", "trade"): {
+        # 4-bar drum trade — kick + snare comping, busier ride
+        36: [(0.0, 90), (2.5, 80)],
+        38: [(1.0, 90), (1.5, 75), (3.0, 95)],               # snare with comp accents
+        42: [(0.0, 75), (0.5, 65), (1.0, 70), (1.5, 65),
+             (2.0, 75), (2.5, 65), (3.0, 70), (3.5, 65)],
+    },
+    ("jazz", "ballad"): {
+        # Slow ballad — sparse kick, cross-stick snare, brushed ride
+        36: [(0.0, 65)],
+        37: [(2.0, 55)],                                     # cross-stick rim
+        42: [(0.0, 55), (1.0, 50), (2.0, 55), (3.0, 50)],    # quarter-note ride
+    },
+    ("jazz", "fill"): {
+        # Tom roll fill — hi → mid → low + crash
+        50: [(2.0, 78), (2.25, 75)],
+        48: [(2.5, 80), (2.75, 78)],
+        45: [(3.0, 82), (3.25, 80)],
+        38: [(3.5, 85), (3.75, 88)],
+        49: [(0.0, 0)],   # placeholder, caller appends crash on bar 1
+    },
 }
 
 

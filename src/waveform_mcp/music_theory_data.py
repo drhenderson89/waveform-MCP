@@ -564,6 +564,68 @@ MIX_BALANCE: dict[str, dict[str, float]] = {
         "pad": -12.0, "lead": -12.0, "ambience": -10.0,
         "fx": -16.0, "counter": -14.0, "drums": -20.0,
     },
+    # Jazz standard / acoustic combo: bass holds the bottom (Sound on
+    # Sound: "the bass holds down the bottom because it's much more of
+    # a consistent presence than the kick"). Drums are LIGHT (brushes
+    # or sparse), piano lead forward, NO sub-bass at all.
+    # Range -19 to -25 LUFS short-term per Mastering The Mix jazz target.
+    "jazz_standard": {
+        "drums": -12.0, "kick": -14.0, "snare": -12.0, "hat": -14.0,
+        "ride": -10.0,
+        "bass": -8.0,                    # bass forward (jazz convention)
+        "sub_bass": -30.0,               # essentially absent
+        "lead": -7.0,                    # piano lead — most prominent
+        "keys": -14.0,                   # rhodes/wurli comp sits under
+        "counter": -12.0,                # sax/horn fills
+        "pad": -22.0,
+        "ambience": -22.0, "fx": -20.0,
+    },
+    # Alias — many callers say "jazz" not "jazz_standard"
+    "jazz": {
+        "drums": -12.0, "kick": -14.0, "snare": -12.0, "hat": -14.0,
+        "ride": -10.0,
+        "bass": -8.0, "sub_bass": -30.0,
+        "lead": -7.0, "keys": -14.0, "counter": -12.0,
+        "pad": -22.0, "ambience": -22.0, "fx": -20.0,
+    },
+    # R&B: similar to pop but rhodes/keys are forward, bass thicker,
+    # drums slightly lower (the keys + vocal are the focus).
+    "rnb": {
+        "drums": -8.0, "kick": -7.0, "snare": -8.0, "hat": -14.0,
+        "bass": -9.0, "sub_bass": -13.0,
+        "lead": -7.0, "keys": -10.0,    # keys are featured
+        "pad": -16.0, "counter": -13.0,
+        "ambience": -22.0, "fx": -16.0,
+    },
+    # Country: vocal-centric, light on bass and drums, fiddle/guitar
+    # in the upper-mid foreground.
+    "country": {
+        "drums": -10.0, "kick": -9.0, "snare": -9.0, "hat": -15.0,
+        "bass": -12.0, "sub_bass": -22.0,
+        "lead": -7.0,                    # vocal
+        "rhythm_guitar": -10.0, "fiddle": -10.0,
+        "pad": -22.0, "keys": -16.0,
+        "ambience": -22.0, "fx": -20.0,
+    },
+    # Folk / acoustic: similar to country but no electric instruments.
+    # Wide dynamic range, very gentle mix.
+    "folk": {
+        "drums": -16.0, "kick": -16.0, "snare": -14.0,
+        "bass": -12.0, "sub_bass": -28.0,
+        "lead": -8.0,                    # acoustic guitar / vocal
+        "rhythm_guitar": -12.0,
+        "pad": -22.0, "ambience": -22.0, "fx": -22.0,
+    },
+    # Orchestral score: soloist forward, strings layered with depth,
+    # brass present, percussion accents (timpani/cymbal events).
+    "orchestral": {
+        "drums": -16.0, "kick": -16.0, "snare": -14.0,
+        "bass": -12.0,    # contrabasses
+        "lead": -8.0,     # primary soloist
+        "strings": -10.0, "brass": -12.0, "woodwinds": -12.0,
+        "pad": -16.0, "counter": -13.0,
+        "ambience": -16.0, "fx": -18.0,
+    },
 }
 
 # Default fallback used when a (genre, role) pair isn't in the table — order

@@ -66,6 +66,23 @@ PLUGIN_CHAIN_OFFSETS_DB: dict[tuple[str, ...], float] = {
     ("lofi bass",):                  0.0,    # multi-sample bass guitar (real samples)
     # ── SFZ/sample-library instruments via sforzando ──
     ("sforzando",):                 -16.0,   # bare sforzando + typical SFZ
+    # ── SFZ-converted Sampler plugins (Salamander, VSCO, etc.) ──
+    # These are Tracktion Samplers loaded via _sfz_to_sampler_sounds,
+    # not real sforzando — they behave like the 808 kit (unity).
+    ("salamander grand piano v3",):           0.0,
+    ("salamander grand piano (retuned)",):    0.0,
+    ("vsco upright piano",):                  0.0,
+    ("vsco upright 1",):                      0.0,
+    ("vsco violin section",):                 0.0,
+    ("vsco viola ensemble",):                 0.0,
+    ("vsco cello ensemble",):                 0.0,
+    ("vsco bassoon",):                        0.0,
+    ("vsco harp",):                           0.0,
+    ("vsco contrabass (bowed)",):             0.0,
+    ("vsco contrabass pizz",):                0.0,
+    ("vsco glockenspiel",):                   0.0,
+    ("vsco marimba",):                        0.0,
+    ("violin",):                              0.0,
     # ── Guitar amp-sim chains (sforzando feeding amp+cab) ──
     ("sforzando", "anvil"):          -4.0,   # +amp boosts gain back up
     ("sforzando", "the anvil"):      -4.0,   # alt name spelling

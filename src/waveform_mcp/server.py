@@ -33,6 +33,9 @@ from .tools import (
     desktop,
     drum_patterns,
     edit as edit_tools,
+    ensemble,
+    jazz_generative,
+    lofi_generative,
     loops,
     melody,
     midi,
@@ -43,6 +46,7 @@ from .tools import (
     reference_songs,
     render,
     step_clips,
+    synthwave_generative,
     tracks,
     waveform_app,
     workflow,
@@ -58,6 +62,11 @@ def _collect_tools() -> tuple[list[Tool], dict[str, Any]]:
         waveform_app, desktop, preset_library, composer, music_theory, loops,
         melody, drum_patterns, composition, step_clips,
         audio_analysis, audio_detect, midi_export, reference_songs, workflow,
+        # Generative composers — formerly only callable via Python; now
+        # registered so MCP clients can drive them directly.
+        lofi_generative, synthwave_generative, jazz_generative,
+        # Cross-genre ensemble cohesion primitives.
+        ensemble,
     ]
     if sys.platform == "win32":
         from .tools import schema_capture, waveform_workflows, win_input
