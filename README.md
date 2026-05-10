@@ -1,5 +1,8 @@
 # Waveform MCP
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+
 An [MCP](https://modelcontextprotocol.io/) server that gives an LLM agent control over [Tracktion Waveform](https://www.tracktion.com/products/waveform-pro). Ask Claude to write a song, balance a mix, or render to MP3 — and watch Waveform do it.
 
 ![Synthwave arrangement built end-to-end via the MCP](docs/img/synthwave_arrangement.png)
