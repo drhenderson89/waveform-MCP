@@ -7,6 +7,15 @@ An [MCP](https://modelcontextprotocol.io/) server that gives an LLM agent contro
 
 ---
 
+## TL;DR
+
+- **150+ MCP tools** spanning composition, MIDI, audio clips, plugins, automation, mixing, mastering, render, and Waveform UI control
+- **Six composers** (synthwave, lofi, lofi-generative, djent, djent-real with VST amp sims, rainstorm) plus `compose_from_reference` and `compose_variations`
+- **Music theory + mix balance knowledge** baked in — scales, progressions, voice leading, per-genre reference levels, plugin-aware fader calibration
+- **Verified XML round-trip** between the in-memory model and Waveform's `.tracktionedit` format, with 250 regression tests guarding every fix
+
+---
+
 ## What this gives you
 
 - **150+ MCP tools** across edit lifecycle, tracks/buses, MIDI, audio clips, plugins, automation, music theory, mix balance, **composition primitives**, **drum pattern library**, **progression generator**, **voice leading**, **arrangement planner**, **audio analysis (LUFS / tempo / key detection)**, **reference song database**, **mastering chain templates**, **MIDI export**, **chord chart export**, **A/B snapshots**, **tool-call history**, render, loop library, VST discovery, schema capture, and Waveform UI control
