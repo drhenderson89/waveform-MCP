@@ -333,28 +333,46 @@ def plugin_add(
     # This is the single systemic fix: every composer (compose_from_spec,
     # compose_lofi_track, compose_lofi_generative, compose_synthwave,
     # compose_djent, ...) gets working drums out of the box.
+    kit_warning = None
     if (p.type or "").lower() == "sampler":
         track_name_lower = (t.name or "").lower()
         if any(k in track_name_lower for k in ("drum", "kit", "percussion")):
-            _auto_populate_drum_kit(p)
+            kit_warning = _auto_populate_drum_kit(p)
 
-    return {"track_id": track_id, "plugin_id": p.id,
-            "resolved_as": "vst" if vst_match else "builtin",
-            "filename": vst_match["file"] if vst_match else None}
+    out = {"track_id": track_id, "plugin_id": p.id,
+           "resolved_as": "vst" if vst_match else "builtin",
+           "filename": vst_match["file"] if vst_match else None}
+    if kit_warning:
+        # Surfaced rather than swallowed: a silent drum track is a defect the
+        # caller can act on (ship a kit, pick another sampler), but only if it
+        # is told. Composers copy this into their `warnings` list.
+        out["warning"] = kit_warning
+    return out
 
 
-def _auto_populate_drum_kit(sampler_plugin) -> None:
-    """Attach factory 808 sounds to a Sampler plugin. Best-effort — if
-    factory presets dir is missing, leaves the sampler empty (no error).
+def _auto_populate_drum_kit(sampler_plugin):
+    """Attach factory 808 sounds to a Sampler plugin.
+
+    Returns None on success, or a human-readable reason string when the kit
+    could not be loaded. Still best-effort — it never raises — but it no
+    longer fails *silently*: an empty Sampler on a drum track means the drum
+    MIDI lands on nothing, and a caller that cannot tell the difference
+    between "loaded" and "silently produced a mute drum track" will ship the
+    mute one. Callers surface the reason as a warning.
+
     Idempotent: skips if `sampler_plugin.sounds` is already populated.
     """
     if getattr(sampler_plugin, "sounds", None):
-        return  # caller already loaded a kit
+        return None  # caller already loaded a kit
     from pathlib import Path
     base = (Path.home() / "AppData" / "Roaming" / "Tracktion" / "Waveform"
             / "Factory Presets" / "Drum Sampler")
     if not base.exists():
-        return
+        # Note this path is Windows-only by construction, so on macOS/Linux
+        # it never resolves and the kit is never available — which is exactly
+        # the case that used to pass unnoticed.
+        return (f"drum kit not loaded: Waveform factory presets not found at "
+                f"{base} — the drum track will be silent")
     mappings = [
         (36, "808 Bass Drum 115.flac",   "Kick"),
         (38, "808 Snare Drum 253.flac",  "Snare"),
@@ -379,6 +397,9 @@ def _auto_populate_drum_kit(sampler_plugin) -> None:
         })
     if sounds:
         sampler_plugin.sounds = sounds
+        return None
+    return (f"drum kit not loaded: no expected 808 sample files under {base} "
+            f"— the drum track will be silent")
 
 
 @op("plugin_set_param", intent_template="Set {param} on {plugin_id}")

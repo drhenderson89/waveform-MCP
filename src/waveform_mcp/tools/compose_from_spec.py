@@ -202,10 +202,13 @@ def _build_track(tspec: TrackSpec, spec: CompositionSpec, total_beats: float,
                     "plugin_id": res["plugin_id"],
                     "param": k, "value": v,
                 })
-            # Note: empty Sampler plugins on drum-named tracks now get
-            # auto-populated by plugin_add itself (it inspects the
-            # parent track's name). The previous explicit fallback is
-            # no longer needed here.
+            # Empty Sampler plugins on drum-named tracks get auto-populated
+            # by plugin_add itself (it inspects the parent track's name).
+            # When it cannot — no factory presets on this machine — it says
+            # so, and that has to reach the caller: an unreported empty
+            # sampler is a silently mute drum track.
+            if res.get("warning"):
+                warnings.append(f"{tspec.name}: {res['warning']}")
         except Exception as e:
             warnings.append(f"plugin_add({plug_name}) on {tspec.name}: {e}")
 
