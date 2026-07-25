@@ -17,6 +17,12 @@ dependencies = [
     "uvicorn[standard]>=0.27",
     "websockets>=12",
     "watchdog>=4",
+    # Core, not dev: automation_from_features, production_analysis and the
+    # audio_analysis / audio_detect / import_song tools all import numpy at
+    # module level, so `pip install waveform-mcp` without it yields a package
+    # that raises ImportError on use. It was undeclared and only ever worked
+    # because a dev machine happened to have it.
+    "numpy>=1.24",
     "pyautogui>=0.9.54",
     "pillow>=10.0",
     "psutil>=5.9",
