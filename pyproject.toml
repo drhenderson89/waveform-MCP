@@ -31,6 +31,13 @@ dev = ["pytest>=8", "ruff>=0.4"]
 waveform-mcp = "waveform_mcp.server:main"
 waveform-mcp-preview = "waveform_mcp.preview.app:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# src layout: without this the suite only runs where the package happens to be
+# installed, and `pytest` in a fresh clone fails at import with
+# ModuleNotFoundError rather than reporting a single failing test.
+pythonpath = ["src"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
