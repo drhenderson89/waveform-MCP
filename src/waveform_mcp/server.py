@@ -10,16 +10,20 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.server import Server
+from mcp.server.caching import CacheHint
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
 
 from . import events
+from . import __version__
 import sys
 
 from .tools import (
@@ -88,29 +92,62 @@ def _collect_tools() -> tuple[list[Tool], dict[str, Any]]:
 
 
 def build_server() -> Server:
-    server = Server("waveform-mcp")
+    """Build the MCP server (protocol revision 2026-07-28).
+
+    The v1 `@server.list_tools()` / `@server.call_tool()` decorators are gone in
+    SDK v2; handlers are passed to the constructor instead.
+    """
     tool_list, handlers = _collect_tools()
 
-    @server.list_tools()
-    async def list_tools() -> list[Tool]:
-        return tool_list
+    async def on_list_tools(_ctx: Any, _params: Any) -> ListToolsResult:
+        return ListToolsResult(tools=tool_list)
 
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    async def on_call_tool(_ctx: Any, params: CallToolRequestParams) -> CallToolResult:
+        name = params.name
         if name not in handlers:
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps({"ok": False, "error": f"unknown tool: {name}"}),
-                )
-            ]
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=json.dumps({"ok": False, "error": f"unknown tool: {name}"}),
+                    )
+                ],
+                is_error=False,
+            )
         try:
-            result = handlers[name](arguments or {})
+            # The handlers are synchronous and many of them do blocking disk,
+            # audio and subprocess work, so they run on a worker thread rather
+            # than stalling the event loop and every concurrent request.
+            result = await anyio.to_thread.run_sync(
+                functools.partial(handlers[name], params.arguments or {})
+            )
         except Exception as e:
             result = {"ok": False, "error": str(e), "type": type(e).__name__}
-        return [TextContent(type="text", text=json.dumps(result, default=str))]
+        # This server has always reported failure through an `ok: False` field
+        # in the payload rather than the protocol's isError, and that is
+        # preserved here rather than changed as a migration side effect.
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(result, default=str))],
+            is_error=False,
+        )
 
-    return server
+    # This is the largest tool catalogue in the suite: 157 tools serializing to
+    # roughly 65 KiB. The list is built once at process start and cannot change
+    # while the process lives, so it is safely cacheable, and a client that
+    # honours the hint stops re-fetching 65 KiB on every reconnect. `public`
+    # because the catalogue is static code, identical for every caller, with no
+    # auth-scoped variation. Tool *results* are caller-specific, but tools/call
+    # is not a cacheable method.
+    return Server(
+        "waveform-mcp",
+        version=__version__,
+        cache_hints={
+            "tools/list": CacheHint(ttl_ms=300_000, scope="public"),
+            "server/discover": CacheHint(ttl_ms=300_000, scope="public"),
+        },
+        on_list_tools=on_list_tools,
+        on_call_tool=on_call_tool,
+    )
 
 
 def main() -> None:
