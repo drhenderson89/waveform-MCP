@@ -21,7 +21,19 @@ from typing import Any
 
 try:
     import pyautogui  # type: ignore[import-untyped]
-except ImportError:
+except Exception:  # noqa: BLE001 - see below; must not be narrowed to ImportError
+    # Deliberately broad. Importing pyautogui is not a pure import: it pulls in
+    # mouseinfo, which on X11 evaluates os.environ['DISPLAY'] AT IMPORT TIME and
+    # raises KeyError on a headless machine. That is not an ImportError, so a
+    # narrower guard here does not catch it -- and because this module is
+    # imported by server.py's tool collection, the failure took down the whole
+    # server, all 157 tools, not just the desktop ones.
+    #
+    # Found when a Linux container build died with KeyError: 'DISPLAY' before
+    # the server could answer a single request. Every caller below already
+    # handles `pyautogui is None`, so degrading to that is the correct
+    # behaviour: the desktop tools report themselves unavailable and the rest
+    # of the server works.
     pyautogui = None  # type: ignore[assignment]
 
 
