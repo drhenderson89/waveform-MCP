@@ -3554,7 +3554,7 @@ def compose_djent_real(args: dict) -> dict:
 
     REQUIREMENT: After opening the project in Waveform, double-click
     each rhythm guitar's sforzando plugin and load:
-        C:/Users/jarms/AppData/Roaming/Tracktion/Waveform/
+        %APPDATA%/Tracktion/Waveform/
         Factory Loops/SFZ/Emilyguitar/emily_basic.sfz
     (one-time per session — sforzando state isn't saved in .tracktionedit
     state we can write yet).

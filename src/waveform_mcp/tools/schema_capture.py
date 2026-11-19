@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .. import safety
+
 
 def _windows_only() -> dict | None:
     if sys.platform != "win32":
@@ -28,9 +30,12 @@ def _windows_only() -> dict | None:
     return None
 
 
-# Where snapshots live. One folder per capture session.
-_SNAP_DIR = Path("state/schema_snapshots")
-_SNAP_DIR.mkdir(parents=True, exist_ok=True)
+def _snap_dir() -> Path:
+    """Where snapshots live (state/schema_snapshots under WAVEFORM_MCP_STATE_DIR
+    or the current directory). Created on first use, not at import."""
+    folder = safety.snapshots_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -106,7 +111,7 @@ def schema_snapshot_current_edit(args: dict) -> dict:
 
     safe_label = re.sub(r"[^a-zA-Z0-9_-]", "_", label)
     ts = int(time.time() * 1000)
-    snap_path = _SNAP_DIR / f"{ts}_{safe_label}.tracktionedit"
+    snap_path = _snap_dir() / f"{ts}_{safe_label}.tracktionedit"
     snap_path.write_bytes(edit_path.read_bytes())
     return {
         "ok": True,
@@ -160,7 +165,7 @@ def schema_diff_snapshots(args: dict) -> dict:
 
 
 def schema_list_snapshots(args: dict) -> dict:
-    files = sorted(_SNAP_DIR.glob("*.tracktionedit"))
+    files = sorted(_snap_dir().glob("*.tracktionedit"))
     return {
         "ok": True,
         "snapshots": [

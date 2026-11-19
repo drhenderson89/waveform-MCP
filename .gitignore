@@ -11,4 +11,6 @@ dist/
 # runtime artifacts
 events.log
 *.tracktionedit.bak
+*.tracktionedit.tmp
+.waveform-mcp-backups/
 state/

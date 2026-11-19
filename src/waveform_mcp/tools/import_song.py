@@ -40,23 +40,21 @@ logger = logging.getLogger(__name__)
 
 
 def _default_analyzer_paths() -> tuple[str | None, str | None]:
-    """Return (python_exe, analyzer_dir) for the bundled music-analyzer.
+    """Return (python_exe, analyzer_dir) for the optional music-analyzer.
 
-    The analyzer lives at C:\\Users\\jarms\\repos\\music-analyzer (per the
-    user's setup) with its own venv. We check the standard location first
-    and fall back to env-var overrides:
+    Configured only through env vars (the original hard-coded the author's
+    own C:\\Users\\... checkout):
 
       MCP_MUSIC_ANALYZER_DIR  — root of the analyzer repo
-      MCP_MUSIC_ANALYZER_PY   — python.exe to use
+      MCP_MUSIC_ANALYZER_PY   — python.exe to use (default: a venv inside
+                                MCP_MUSIC_ANALYZER_DIR)
     """
     env_dir = os.environ.get("MCP_MUSIC_ANALYZER_DIR")
     env_py = os.environ.get("MCP_MUSIC_ANALYZER_PY")
     if env_dir and env_py and Path(env_py).exists():
         return env_py, env_dir
 
-    candidates = [
-        Path(r"C:\Users\jarms\repos\music-analyzer"),
-    ]
+    candidates = [Path(env_dir)] if env_dir else []
     for d in candidates:
         if not d.exists():
             continue
@@ -172,9 +170,8 @@ def _run_analyzer(audio_path: str, *, timeout: float = 600.0) -> tuple[dict[str,
     """Run music-analyzer subprocess. Returns (analysis_dict, json_path | error_msg)."""
     py, analyzer_dir = _default_analyzer_paths()
     if not py or not analyzer_dir:
-        return None, ("music-analyzer not found. Set MCP_MUSIC_ANALYZER_DIR + "
-                      "MCP_MUSIC_ANALYZER_PY env vars, or install at "
-                      "C:\\Users\\jarms\\repos\\music-analyzer with a venv.")
+        return None, ("music-analyzer not found. Set MCP_MUSIC_ANALYZER_DIR (and "
+                      "optionally MCP_MUSIC_ANALYZER_PY) in the server's environment.")
     if not Path(audio_path).exists():
         return None, f"audio file not found: {audio_path}"
 

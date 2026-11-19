@@ -22,6 +22,8 @@ try:
 except ImportError:
     psutil = None  # type: ignore[assignment]
 
+from .. import safety
+
 # Common install locations on Windows
 WINDOWS_CANDIDATES = [
     r"C:\Program Files\Tracktion\Waveform 13\Waveform 13.exe",
@@ -52,7 +54,8 @@ TOOLS: list[dict[str, Any]] = [
             "Launch Waveform, optionally opening a .tracktionedit file. If Waveform is "
             "already running and a file path is provided, opens the file in the existing "
             "instance via OS file association (Waveform registers itself as the handler "
-            "for .tracktionedit on install)."
+            "for .tracktionedit on install). The executable is auto-detected, or taken "
+            "from the WAVEFORM_EXE environment variable set in the server config."
         ),
         "inputSchema": {
             "type": "object",
@@ -61,10 +64,6 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional .tracktionedit to open",
                 },
-                "exe_path": {
-                    "type": "string",
-                    "description": "Override the auto-detected Waveform binary path",
-                },
             },
         },
     },
@@ -72,14 +71,25 @@ TOOLS: list[dict[str, Any]] = [
         "name": "waveform_focus",
         "description": (
             "Bring Waveform's main window to the foreground. Required before "
-            "desktop_key / desktop_type send keystrokes to the app."
+            "desktop_key / desktop_type (when enabled) send keystrokes to the app."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "waveform_quit",
-        "description": "Politely close Waveform (sends WM_CLOSE to the main window).",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": (
+            "Close Waveform the way its close button would (WM_CLOSE), so it can ask "
+            "to save changes. If it is still open after `timeout` seconds (e.g. a save "
+            "prompt is waiting), returns ok=False and leaves it running. force=true "
+            "kills it instead, LOSING unsaved changes; only use that if the user asks."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "timeout": {"type": "number", "default": 10, "minimum": 1, "maximum": 60},
+                "force": {"type": "boolean", "default": False},
+            },
+        },
     },
     {
         "name": "waveform_settings_dir",
@@ -97,25 +107,38 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def _find_running() -> tuple[int | None, str | None]:
+    """(pid, exe) of the running Waveform.
+
+    The old check ("waveform" anywhere in the process name) also matched this
+    server's own waveform-mcp.exe, so waveform_quit could kill the server.
+    """
     if psutil is None:
         return None, None
-    for proc in psutil.process_iter(["pid", "name", "exe"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-            exe = proc.info.get("exe") or ""
-            if "waveform" in name and exe:
-                return int(proc.info["pid"]), exe
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+    return safety.find_waveform_process()
+
+
+def _installed_candidates() -> list[str]:
+    """Known install paths, plus any Waveform*.exe under Program Files/Tracktion
+    (covers editions and versions not listed, e.g. Waveform Free)."""
+    found = list(WINDOWS_CANDIDATES)
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if not root:
             continue
-    return None, None
+        tracktion = Path(root) / "Tracktion"
+        if tracktion.is_dir():
+            found.extend(str(p) for p in sorted(tracktion.glob("*/Waveform*.exe")))
+    return found
 
 
 def _locate() -> str | None:
+    configured = safety.configured_waveform_exe()
+    if configured:
+        return configured
     pid, exe = _find_running()
     if exe:
         return exe
-    for cand in WINDOWS_CANDIDATES:
-        if Path(cand).exists():
+    for cand in _installed_candidates():
+        if safety.waveform_exe_error(cand) is None:
             return cand
     # PATH fallback
     for name in ("Waveform 13.exe", "Waveform.exe"):
@@ -157,12 +180,24 @@ def waveform_launch(args: dict) -> dict:
     ok=False with a specific `stage` field naming the failure point.
     """
     file_path = args.get("file_path")
-    exe_path = args.get("exe_path") or _locate()
+    if args.get("exe_path"):
+        # Removed: a tool argument that picks the executable lets the caller
+        # start any program. Configure WAVEFORM_EXE in the server env instead.
+        return {"ok": False, "error": (
+            "exe_path is no longer accepted; set WAVEFORM_EXE in the MCP server's "
+            "environment if Waveform isn't auto-detected")}
+    exe_path = _locate()
     if exe_path is None:
-        return {"ok": False, "error": "Waveform binary not found"}
+        return {"ok": False, "error": (
+            "Waveform binary not found; set WAVEFORM_EXE in the MCP server's environment")}
+    exe_error = safety.waveform_exe_error(exe_path)
+    if exe_error:
+        return {"ok": False, "error": exe_error}
 
     if file_path:
-        if not Path(file_path).exists():
+        if Path(file_path).suffix.lower() != ".tracktionedit":
+            return {"ok": False, "error": f"not a .tracktionedit file: {file_path}"}
+        if not Path(file_path).is_file():
             return {"ok": False, "error": f"file not found: {file_path}"}
 
     pid, _ = _find_running()
@@ -552,6 +587,13 @@ def _drag_file_into_waveform(file_path: str) -> dict:
         return {"ok": False, "error": "couldn't locate file in Explorer",
                 "stage": "explorer_find"}
     src_x, src_y = src
+
+    # The drop lands on whatever window is under the target point. If Explorer
+    # (or anything else) covers it, dropping there could move the file.
+    reason = safety.point_on_waveform_error(target_x, target_y)
+    if reason:
+        return {"ok": False, "error": f"{reason}; open the file from Waveform instead",
+                "stage": "drop_target"}
 
     # 4. Real mouse drag with SendInput. pyautogui's mouseDown/Up issue
     # SendInput events that JUCE's OLE IDropTarget honors.
@@ -1025,22 +1067,64 @@ def waveform_focus(args: dict) -> dict:
     return {"ok": True, "title": win.title}
 
 
+def _post_close(pid: int) -> int:
+    """Post WM_CLOSE to each visible top-level window of `pid`. Returns the count."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    user32 = ctypes.windll.user32
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    targets: list[int] = []
+
+    def cb(hwnd: int, lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        owner = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if int(owner.value) == pid:
+            targets.append(hwnd)
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(cb), 0)
+    WM_CLOSE = 0x0010
+    for hwnd in targets:
+        user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+    return len(targets)
+
+
 def waveform_quit(args: dict) -> dict:
+    """Close Waveform gracefully; kill it only with force=true.
+
+    psutil's terminate() is TerminateProcess on Windows, an immediate kill that
+    loses unsaved work, so it is no longer the default.
+    """
     if psutil is None:
         return {"ok": False, "error": "psutil not installed"}
     pid, _ = _find_running()
     if pid is None:
         return {"ok": True, "running": False}
+    timeout = float(args.get("timeout", 10))
+    force = bool(args.get("force", False))
     try:
         proc = psutil.Process(pid)
-        proc.terminate()
+        if sys.platform == "win32":
+            _post_close(pid)
+        else:
+            proc.terminate()  # SIGTERM: a graceful request on POSIX
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=timeout)
+            return {"ok": True, "pid": pid, "mode": "closed"}
         except psutil.TimeoutExpired:
-            proc.kill()
+            if not force:
+                return {"ok": False, "pid": pid, "error": (
+                    f"Waveform is still open after {timeout:g}s; it may be asking whether "
+                    "to save. Answer it in Waveform, or call again with force=true to kill "
+                    "it (unsaved changes are lost).")}
+        proc.kill()
+        proc.wait(timeout=5)
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    return {"ok": True, "pid": pid}
+    return {"ok": True, "pid": pid, "mode": "killed"}
 
 
 def waveform_settings_dir(args: dict) -> dict:

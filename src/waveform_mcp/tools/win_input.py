@@ -1,20 +1,21 @@
-"""Windows-only: send input to Waveform without stealing focus.
+"""Windows-only: send input to Waveform.
 
-Two surfaces:
-  1. **PostMessage-based keystrokes** — sends WM_KEYDOWN/WM_KEYUP/WM_CHAR
-     events directly to Waveform's window handle. Works while another app
-     (the user's game, browser, whatever) keeps foreground focus. Reliable
-     for menu-bar shortcuts (Ctrl+N, Ctrl+S, Alt-mnemonics). Less reliable
-     for in-canvas input.
+Surfaces:
+  1. **Keystrokes** (win_send_keys, win_uia_focus_and_type) go through
+     SendInput, which Windows delivers to the FOREGROUND window. So they are
+     only sent once Waveform is verified to be the foreground window; with
+     silent_focus the previous foreground window is restored afterwards.
+     (An earlier AttachThreadInput approach did not change the foreground, so
+     keystrokes could land in whatever app the user had in front.)
 
-  2. **PrintWindow screenshots** — captures Waveform's window contents into
-     a bitmap regardless of whether it's foreground, occluded, or minimized.
-     Lets us "see" the app without alt-tabbing the user there.
+  2. **Real mouse input** (win_click_real, win_drag_real) is only sent to
+     points where the window under the cursor belongs to Waveform.
 
-When PostMessage isn't enough (e.g. for actions that go through the keyboard
-focus chain into a child control), we fall back to the AttachThreadInput
-trick: briefly attach to Waveform's input queue, set focus, fire the key,
-detach. The user's perceived foreground app is not changed.
+  3. **PostMessage clicks** (win_click_waveform) go to Waveform's window
+     handle directly and need no guard.
+
+  4. **PrintWindow screenshots** capture Waveform's window contents into a
+     bitmap regardless of whether it's foreground, occluded, or minimized.
 
 This module is a no-op on non-Windows platforms.
 """
@@ -23,8 +24,9 @@ from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 from typing import Any
+
+from .. import safety
 
 # Defer Win32-specific imports until call-time so the module imports cleanly
 # on Linux/macOS (where it just refuses to run).
@@ -35,8 +37,6 @@ def _windows_only() -> dict | None:
         return {"ok": False, "error": "win_input is Windows-only"}
     return None
 
-
-SHOTS_DIR = Path("state/screenshots")
 
 
 # ---------- tool defs ----------
@@ -67,12 +67,14 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "win_send_keys",
         "description": (
-            "Send keystrokes to Waveform without stealing the user's foreground focus. "
+            "Send keystrokes to Waveform. "
             "Use the pywinauto syntax: '^n' = Ctrl+N, '^s' = Ctrl+S, "
             "'%fs' = Alt-F then S (File menu → Save), 'Hello~' = type 'Hello' then Enter, "
             "'{ENTER}', '{ESC}', '{F5}', '{TAB 3}' for special keys/repeats. "
-            "If silent_focus=true (default), uses AttachThreadInput so the user's apparent "
-            "foreground app is preserved. Set false to actually take focus."
+            "Waveform is brought to the foreground first (Windows delivers keystrokes "
+            "to the foreground window), and nothing is sent unless that succeeds. "
+            "If silent_focus=true (default), the previous foreground window is restored "
+            "afterwards. Set false to leave Waveform in front."
         ),
         "inputSchema": {
             "type": "object",
@@ -227,7 +229,10 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "win_list_windows",
-        "description": "Diagnostic: list all top-level windows with HWND, PID, title.",
+        "description": (
+            "Diagnostic: list Waveform's visible top-level windows (main window and "
+            "dialogs) with HWND, PID, title. Other applications' windows are not listed."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -245,19 +250,13 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def _waveform_pid() -> int | None:
-    """Return the PID of the running Waveform.exe process, or None."""
-    try:
-        import psutil
-    except ImportError:
-        return None
-    for proc in psutil.process_iter(["pid", "name"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-            if "waveform" in name and "tracktion" not in name:  # exclude Tracktion Download Manager
-                return int(proc.info["pid"])
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return None
+    """Return the PID of the running Waveform process, or None.
+
+    Uses safety.find_waveform_process, which (unlike the old substring match)
+    skips this server's own waveform-mcp.exe entry point.
+    """
+    pid, _ = safety.find_waveform_process()
+    return pid
 
 
 def _find_waveform_hwnd() -> int | None:
@@ -416,11 +415,10 @@ def win_screenshot_waveform(args: dict) -> dict:
     gdi32.DeleteDC(mfc_dc)
     user32.ReleaseDC(hwnd, hwnd_dc)
 
-    SHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    name = args.get("name") or f"waveform_{int(time.time()*1000)}.png"
-    if not name.endswith(".png"):
-        name += ".png"
-    path = SHOTS_DIR / name
+    shots = safety.screenshots_dir()
+    shots.mkdir(parents=True, exist_ok=True)
+    name = safety.safe_filename(args.get("name"), f"waveform_{int(time.time()*1000)}", ".png")
+    path = shots / name
     img.save(path)
 
     return {
@@ -452,37 +450,38 @@ def win_send_keys(args: dict) -> dict:
 
     pid = _get_pid(hwnd)
 
-    if silent:
-        # AttachThreadInput trick: attach our thread to Waveform's input queue,
-        # set focus on Waveform's HWND, send key via the standard Windows input
-        # path, then detach. The OS records the keystroke against Waveform but
-        # the user's perceived foreground app is unchanged.
-        import ctypes
+    import ctypes
 
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    previous = user32.GetForegroundWindow()
 
-        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
-        current_thread = kernel32.GetCurrentThreadId()
-        attached = user32.AttachThreadInput(current_thread, target_thread, True)
-        try:
-            user32.SetFocus(hwnd)
-            send_keys(keys, with_spaces=True, pause=0.02)
-        finally:
-            if attached:
-                user32.AttachThreadInput(current_thread, target_thread, False)
-    else:
+    # send_keys uses SendInput, which Windows delivers to the foreground
+    # window regardless of thread-input attachment. Make Waveform the
+    # foreground window and confirm it before sending anything.
+    if safety.foreground_pid() != pid:
         try:
             app = Application(backend="win32").connect(process=pid)
             app.window(handle=hwnd).set_focus()
         except Exception as e:
             return {"ok": False, "error": f"connect failed: {e}"}
-        send_keys(keys, with_spaces=True, pause=0.02)
+        time.sleep(0.05)
+    reason = safety.foreground_is_waveform_error()
+    if reason:
+        return {"ok": False, "error": f"{reason}; keystrokes not sent"}
+
+    send_keys(keys, with_spaces=True, pause=0.02)
 
     if delay > 0:
         time.sleep(delay)
 
-    return {"ok": True, "hwnd": hwnd, "keys": keys, "silent": silent}
+    restored = False
+    if silent and previous and safety.window_pid(previous) not in (None, pid):
+        # Give the keystrokes time to be dispatched before switching back.
+        time.sleep(0.1)
+        restored = bool(user32.SetForegroundWindow(previous))
+
+    return {"ok": True, "hwnd": hwnd, "keys": keys, "silent": silent,
+            "restored_foreground": restored}
 
 
 def _uia_app():
@@ -664,6 +663,10 @@ def win_uia_focus_and_type(args: dict) -> dict:
         except Exception:
             pass
         time.sleep(0.1)
+        # Keystrokes go to the foreground window; make sure that's Waveform.
+        reason = safety.foreground_is_waveform_error()
+        if reason:
+            return {"ok": False, "error": f"{reason}; text not typed"}
         if clear_first:
             send_keys("^a{DELETE}", with_spaces=True, pause=0.02)
         send_keys(text, with_spaces=True, pause=0.01)
@@ -726,6 +729,13 @@ def win_drag_real(args: dict) -> dict:
         tx += rect[0]
         ty += rect[1]
 
+    # Real mouse input goes to whatever window is under the cursor, so both
+    # ends of the drag must be on Waveform.
+    for x, y in ((fx, fy), (tx, ty)):
+        reason = safety.point_on_waveform_error(x, y)
+        if reason:
+            return {"ok": False, "error": reason}
+
     duration = float(args.get("duration", 0.5))
     settle = float(args.get("settle_after", 0.6))
 
@@ -766,6 +776,10 @@ def win_click_real(args: dict) -> dict:
     rect = info["rect"]
     abs_x = rect[0] + int(args["x"])
     abs_y = rect[1] + int(args["y"])
+
+    reason = safety.point_on_waveform_error(abs_x, abs_y)
+    if reason:
+        return {"ok": False, "error": reason}
 
     button = args.get("button", "left")
     clicks = int(args.get("clicks", 1))
@@ -837,6 +851,10 @@ def win_list_windows(args: dict) -> dict:
     import ctypes
     import ctypes.wintypes as wt
 
+    target_pid = _waveform_pid()
+    if target_pid is None:
+        return {"ok": False, "error": "Waveform is not running"}
+
     user32 = ctypes.windll.user32
     EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
     flt = (args.get("filter") or "").lower()
@@ -844,6 +862,12 @@ def win_list_windows(args: dict) -> dict:
 
     def cb(hwnd: int, lparam: int) -> bool:
         if not user32.IsWindowVisible(hwnd):
+            return True
+        # Only Waveform's own windows: other apps' titles (browser tabs,
+        # documents) are none of this tool's business.
+        owner = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if int(owner.value) != target_pid:
             return True
         length = user32.GetWindowTextLengthW(hwnd)
         if length == 0:

@@ -13,7 +13,6 @@ import asyncio
 import functools
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
 import anyio
@@ -23,6 +22,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
 
 from . import events
+from . import safety
 from . import __version__
 import sys
 
@@ -75,6 +75,10 @@ def _collect_tools() -> tuple[list[Tool], dict[str, Any]]:
     if sys.platform == "win32":
         from .tools import schema_capture, waveform_workflows, win_input
         modules.extend([win_input, waveform_workflows, schema_capture])
+    # The desktop_* tools act on whatever window has focus, not just Waveform,
+    # so they are only offered when the person running the server opts in.
+    if not safety.desktop_enabled():
+        modules.remove(desktop)
 
     for mod in modules:
         all_tool_defs.extend(mod.TOOLS)
@@ -151,9 +155,10 @@ def build_server() -> Server:
 
 
 def main() -> None:
-    # Direct event log to a stable file in the current working dir, so the
-    # preview UI can find it.
-    log_path = Path.cwd() / "events.log"
+    # Direct event log to a stable file (the current working dir unless
+    # WAVEFORM_MCP_STATE_DIR is set), so the preview UI can find it.
+    log_path = safety.events_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     events.configure(log_path)
 
     asyncio.run(_serve())

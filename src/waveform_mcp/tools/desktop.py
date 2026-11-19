@@ -8,6 +8,12 @@ return value includes the path so the host can surface them. We don't try
 to base64-stuff images through the MCP response — too heavy.
 
 Safety:
+  - These tools are NOT registered unless the server runs with
+    WAVEFORM_MCP_ENABLE_DESKTOP=1, and every handler re-checks that, because
+    they act on the whole desktop rather than on Waveform alone.
+  - On Windows, desktop_key / desktop_type refuse unless Waveform is the
+    foreground window, and desktop_click refuses unless the point is on a
+    Waveform window, so input can't land in another application.
   - Every tool here depends on something visible on screen. Always call
     waveform_focus first when targeting Waveform.
   - pyautogui has a 0.1s pause between actions by default; we keep that.
@@ -16,8 +22,9 @@ Safety:
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any
+
+from .. import safety
 
 try:
     import pyautogui  # type: ignore[import-untyped]
@@ -36,8 +43,6 @@ except Exception:  # noqa: BLE001 - see below; must not be narrowed to ImportErr
     # of the server works.
     pyautogui = None  # type: ignore[assignment]
 
-
-SHOTS_DIR = Path("state/screenshots")
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -140,20 +145,37 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def _check() -> dict | None:
+    if not safety.desktop_enabled():
+        return {"ok": False, "error": safety.DESKTOP_DISABLED_ERROR}
     if pyautogui is None:
         return {"ok": False, "error": "pyautogui not installed"}
     return None
+
+
+def _check_keys() -> dict | None:
+    err = _check()
+    if err:
+        return err
+    reason = safety.foreground_is_waveform_error()
+    return {"ok": False, "error": reason} if reason else None
+
+
+def _check_point(x: int, y: int) -> dict | None:
+    err = _check()
+    if err:
+        return err
+    reason = safety.point_on_waveform_error(x, y)
+    return {"ok": False, "error": reason} if reason else None
 
 
 def desktop_screenshot(args: dict) -> dict:
     err = _check()
     if err:
         return err
-    SHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    name = args.get("name") or f"shot_{int(time.time()*1000)}.png"
-    if not name.endswith(".png"):
-        name += ".png"
-    path = SHOTS_DIR / name
+    shots = safety.screenshots_dir()
+    shots.mkdir(parents=True, exist_ok=True)
+    name = safety.safe_filename(args.get("name"), f"shot_{int(time.time()*1000)}", ".png")
+    path = shots / name
     region = args.get("region")
     img = pyautogui.screenshot(region=tuple(region) if region else None)
     img.save(path)
@@ -161,7 +183,7 @@ def desktop_screenshot(args: dict) -> dict:
 
 
 def desktop_key(args: dict) -> dict:
-    err = _check()
+    err = _check_keys()
     if err:
         return err
     keys = args["keys"]
@@ -176,7 +198,7 @@ def desktop_key(args: dict) -> dict:
 
 
 def desktop_type(args: dict) -> dict:
-    err = _check()
+    err = _check_keys()
     if err:
         return err
     pyautogui.write(args["text"], interval=float(args.get("interval", 0.01)))
@@ -184,7 +206,7 @@ def desktop_type(args: dict) -> dict:
 
 
 def desktop_click(args: dict) -> dict:
-    err = _check()
+    err = _check_point(int(args["x"]), int(args["y"]))
     if err:
         return err
     pyautogui.click(

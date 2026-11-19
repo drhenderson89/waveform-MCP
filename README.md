@@ -51,7 +51,14 @@ Built and tested through ~30 hours of human-in-the-loop iteration with Claude. B
 cd "C:\path\to\waveform MCP"
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e .
+pip install --require-hashes -r requirements-lock.txt   # exact, hash-checked dependencies
+pip install --no-deps -e .
+```
+
+`requirements-lock.txt` pins every dependency to an exact version and hash (Windows, Python 3.12). Regenerate it after changing `pyproject.toml`:
+
+```powershell
+uv pip compile pyproject.toml --generate-hashes --python-platform windows --python-version 3.12 --no-header -o requirements-lock.txt
 ```
 
 ### Wire to Claude (Code, Desktop, or any MCP client)
@@ -62,11 +69,43 @@ pip install -e .
 {
   "mcpServers": {
     "waveform": {
-      "command": "waveform-mcp"
+      "command": "C:\\path\\to\\waveform MCP\\.venv\\Scripts\\waveform-mcp.exe",
+      "env": {
+        "WAVEFORM_MCP_STATE_DIR": "C:\\path\\to\\music\\workspace"
+      }
     }
   }
 }
 ```
+
+See [Security and configuration](#security-and-configuration) for the other settings.
+
+---
+
+## Security and configuration
+
+The server drives a desktop application with real mouse and keyboard input, so it is built to keep that input inside Waveform:
+
+- **Screen-wide tools are opt-in.** The `desktop_*` tools click, type and screenshot anywhere on the desktop. They are not registered unless the server runs with `WAVEFORM_MCP_ENABLE_DESKTOP=1`; the `win_*` tools cover Waveform without them. When enabled on Windows, `desktop_key`/`desktop_type` refuse unless Waveform is the foreground window, and `desktop_click` refuses unless the point is on a Waveform window.
+- **Input is checked before it is sent.** `win_click_real`, `win_drag_real` and the Explorer drag in `waveform_launch` only send real mouse input to points where the window under the cursor belongs to Waveform. `win_send_keys` and `win_uia_focus_and_type` only type once Waveform is confirmed as the foreground window, because Windows delivers synthesized keystrokes to the foreground window; with `silent_focus` the previous window is brought back afterwards.
+- **No arbitrary programs.** `waveform_launch` no longer takes an `exe_path`; the executable is auto-detected or set with `WAVEFORM_EXE`, and must be named `Waveform*`. It only opens `.tracktionedit` files.
+- **The right process.** Waveform is identified by its executable name, excluding this server's own `waveform-mcp.exe` (which the original substring match picked up, so `waveform_quit` could kill the server).
+- **No lost work on quit.** `waveform_quit` closes Waveform like its close button would, so it can ask to save. It only kills the process with `force=true`.
+- **Project backups.** Before a `.tracktionedit` is overwritten, the previous version is copied to `.waveform-mcp-backups/` beside it (newest 10 kept), and the new file is written atomically. The writer regenerates the whole file, so anything changed by hand in Waveform since the last load would otherwise be lost.
+- **Waveform-only diagnostics.** `win_list_windows` lists only Waveform's windows, not other applications' titles.
+- **Preview page.** The optional preview server rejects WebSocket connections from other websites' pages and requests with a foreign `Host` header (DNS rebinding), and escapes everything it renders.
+- **No network access.** The MCP server speaks stdio only and makes no outbound requests.
+
+| Environment variable | Default | Effect |
+|---|---|---|
+| `WAVEFORM_MCP_ENABLE_DESKTOP` | off | `1` registers the screen-wide `desktop_*` tools |
+| `WAVEFORM_EXE` | auto-detect | Path to the Waveform executable (e.g. for Waveform Free) |
+| `WAVEFORM_MCP_STATE_DIR` | current directory | Where `events.log` and `state/` (screenshots, schema snapshots) go |
+| `WAVEFORM_MCP_BACKUP_KEEP` | `10` | Backups kept per project; `0` turns backups off |
+| `MCP_MUSIC_ANALYZER_DIR` / `MCP_MUSIC_ANALYZER_PY` | unset | Optional music-analyzer for `import_song` |
+| `MCP_BASIC_PITCH_PY` | unset | Optional Python with basic-pitch for transcription |
+
+Tools that write files (`edit_save`, renders, exports) write wherever they are told; let your MCP client ask before each call rather than allowing them automatically.
 
 ### Try it
 

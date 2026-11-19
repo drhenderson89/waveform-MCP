@@ -109,7 +109,7 @@ function renderTracks() {
     trackEl.innerHTML = `
       <div class="track-head">
         <span class="track-name">${escapeHtml(t.name)}</span>
-        <span class="track-meta">${t.kind} · ${t.volume_db.toFixed(1)} dB · pan ${t.pan.toFixed(2)}</span>
+        <span class="track-meta">${escapeHtml(t.kind)} · ${Number(t.volume_db).toFixed(1)} dB · pan ${Number(t.pan).toFixed(2)}</span>
       </div>
       <div class="lane"></div>
     `;
@@ -149,7 +149,7 @@ function renderEvent(evt) {
   let cls = "", body = "";
   if (evt.kind === "tool_call") {
     cls = evt.result === "error" ? "evt-error" : "evt-tool";
-    body = `<strong>${evt.tool}</strong>` + (evt.intent ? ` <span class="evt-intent">— ${escapeHtml(evt.intent)}</span>` : "");
+    body = `<strong>${escapeHtml(evt.tool)}</strong>` + (evt.intent ? ` <span class="evt-intent">— ${escapeHtml(evt.intent)}</span>` : "");
     if (evt.error) body += ` <span class="evt-error">[${escapeHtml(evt.error)}]</span>`;
   } else if (evt.kind === "narrate") {
     cls = "evt-narrate"; body = escapeHtml(evt.text || "");
@@ -158,10 +158,10 @@ function renderEvent(evt) {
   } else if (evt.kind === "edit_opened") {
     cls = "evt-flush"; body = `opened ${escapeHtml(evt.path || "")}`;
   } else {
-    body = `<em>${evt.kind}</em>`;
+    body = `<em>${escapeHtml(evt.kind)}</em>`;
   }
   li.className = cls;
-  li.innerHTML = `<span class="evt-time">${time}</span>${body}`;
+  li.innerHTML = `<span class="evt-time">${escapeHtml(time)}</span>${body}`;
   eventsEl.prepend(li);
   // cap to 200
   while (eventsEl.children.length > 200) eventsEl.lastChild.remove();

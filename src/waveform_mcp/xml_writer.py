@@ -24,10 +24,15 @@ extend as we capture more fixtures (MIDI clips, audio clips, plugins).
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 
+from . import safety
 from .model import (
     AudioClip,
     Edit,
@@ -579,10 +584,52 @@ def to_xml(edit: Edit) -> ET.ElementTree:
     return ET.ElementTree(root)
 
 
+BACKUP_DIR_NAME = ".waveform-mcp-backups"
+
+
+def backup_existing(path: str | Path) -> Path | None:
+    """Copy `path` into a .waveform-mcp-backups/ folder beside it before it is
+    overwritten, keeping the newest WAVEFORM_MCP_BACKUP_KEEP copies (default 10).
+
+    The writer regenerates the whole file from the in-memory model, so anything
+    the model doesn't represent (edits made by hand in Waveform) would otherwise
+    be gone for good. Returns the backup path, or None if nothing was backed up.
+    """
+    src = Path(path)
+    keep = safety.backup_keep()
+    if keep <= 0 or not src.is_file():
+        return None
+    folder = src.parent / BACKUP_DIR_NAME
+    folder.mkdir(exist_ok=True)
+    now = time.time_ns()
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now // 1_000_000_000))
+    dest = folder / f"{src.stem}.{stamp}-{now % 1_000_000_000:09d}{src.suffix}"
+    shutil.copy2(src, dest)
+    # Exact pattern, so pruning never touches another project's backups
+    # (a glob like "song.*" would also match "song.v2.<stamp>").
+    mine = re.compile(re.escape(src.stem) + r"\.\d{8}-\d{6}-\d{9}" + re.escape(src.suffix))
+    old = sorted(p for p in folder.iterdir() if mine.fullmatch(p.name))
+    for stale in old[:-keep]:
+        stale.unlink(missing_ok=True)
+    return dest
+
+
 def write(edit: Edit, path: str) -> None:
+    """Write the Edit to `path`, backing up any existing file first.
+
+    Writes to a temporary file in the same folder and renames it over the
+    target, so a crash mid-write can't leave Waveform's project truncated.
+    """
     tree = to_xml(edit)
     ET.indent(tree, space="  ")
-    tree.write(path, encoding="utf-8", xml_declaration=True)
+    target = Path(path)
+    backup_existing(target)
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        tree.write(tmp, encoding="utf-8", xml_declaration=True)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def to_string(edit: Edit) -> str:

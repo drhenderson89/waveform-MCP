@@ -24,17 +24,35 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+LOOPBACK_HOSTS = ["localhost", "127.0.0.1"]
 
-def create_app(events_path: Path) -> FastAPI:
+
+def _origin_allowed(origin: str | None, host: str | None) -> bool:
+    """Browsers don't apply CORS to WebSockets, so any website open in the
+    user's browser could otherwise connect to ws://localhost:7878 and read the
+    event stream (file paths, project contents). Browsers always send Origin
+    on a WebSocket handshake; accept only this page's own origin. Non-browser
+    clients send no Origin and are allowed."""
+    if origin is None:
+        return True
+    return bool(host) and urlsplit(origin).netloc.lower() == host.lower()
+
+
+def create_app(events_path: Path, allowed_hosts: list[str] | None = None) -> FastAPI:
     app = FastAPI(title="Waveform MCP Preview")
+    # Rejects requests whose Host header isn't this machine (DNS rebinding:
+    # a website pointing its own hostname at 127.0.0.1 to read the API).
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or LOOPBACK_HOSTS)
 
     state = {
         "events_path": events_path,
@@ -53,6 +71,7 @@ def create_app(events_path: Path) -> FastAPI:
         if not events_path.exists():
             return []
         lines = events_path.read_text(encoding="utf-8").splitlines()
+        limit = max(1, min(int(limit), 1000))
         out = []
         for line in lines[-limit:]:
             try:
@@ -63,6 +82,9 @@ def create_app(events_path: Path) -> FastAPI:
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
+        if not _origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
+            await websocket.close(code=1008)  # policy violation
+            return
         await websocket.accept()
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         state["clients"].add(queue)
@@ -135,7 +157,16 @@ def main() -> None:
     parser.add_argument("--events", default="events.log")
     args = parser.parse_args()
 
-    app = create_app(Path(args.events).resolve())
+    allowed = list(LOOPBACK_HOSTS)
+    if args.host not in LOOPBACK_HOSTS:
+        print(f"WARNING: listening on {args.host}; the event stream (file paths, "
+              "project contents) is readable by anything that can reach it, with no "
+              "authentication.")
+        if args.host not in ("0.0.0.0", "::"):
+            allowed.append(args.host)
+        else:
+            allowed = ["*"]
+    app = create_app(Path(args.events).resolve(), allowed_hosts=allowed)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

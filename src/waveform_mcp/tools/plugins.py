@@ -204,6 +204,7 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
+            "required": ["edit_file_path"],
             "properties": {
                 "edit_file_path": {"type": "string"},
                 "plugin_name":    {"type": "string"},
@@ -673,8 +674,10 @@ def plugin_state_capture(args: dict) -> dict:
     plugins of the same type programmatically.
     """
     import re
-    edit_path = args.get("edit_file_path",
-        r"C:\Users\jarms\OneDrive\Documents\MCP-Validate\MCP-Validate Edit 1.tracktionedit")
+    edit_path = args.get("edit_file_path")
+    if not edit_path:
+        # The original defaulted to a file in the author's own OneDrive.
+        return {"ok": False, "error": "pass edit_file_path"}
     target_name = args.get("plugin_name", "").lower()
     target_unique_id = args.get("unique_id", "").lower()
     if not (target_name or target_unique_id):

@@ -45,7 +45,7 @@ def _find_python_with_basic_pitch() -> str | None:
     Checks (in order):
       1. MCP_BASIC_PITCH_PY env var
       2. The current interpreter
-      3. music-analyzer's venv at the standard location
+      3. a venv inside MCP_MUSIC_ANALYZER_DIR, if that is set
     Returns None if none found.
     """
     env_py = os.environ.get("MCP_BASIC_PITCH_PY")
@@ -56,11 +56,13 @@ def _find_python_with_basic_pitch() -> str | None:
     if _has_module(sys.executable, "basic_pitch"):
         return sys.executable
 
-    # Try music-analyzer venv (same heuristic as import_song)
+    # Try the music-analyzer's venv (same heuristic as import_song). The
+    # original hard-coded the author's own C:\\Users\\... checkout.
+    analyzer_dir = os.environ.get("MCP_MUSIC_ANALYZER_DIR")
     candidates = [
-        Path(r"C:\Users\jarms\repos\music-analyzer\venv\Scripts\python.exe"),
-        Path(r"C:\Users\jarms\repos\music-analyzer\venv314\Scripts\python.exe"),
-    ]
+        Path(analyzer_dir) / venv / "Scripts" / "python.exe"
+        for venv in ("venv", "venv314", ".venv")
+    ] if analyzer_dir else []
     for py in candidates:
         if py.exists() and _has_module(str(py), "basic_pitch"):
             return str(py)
