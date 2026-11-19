@@ -151,6 +151,21 @@ def _locate() -> str | None:
     return None
 
 
+def _waveform_windows(gw) -> list:
+    """pygetwindow windows that belong to the running Waveform process.
+
+    Waveform's dialogs (including the standard file dialogs it opens) live in
+    its own process, so filtering by PID finds them without matching other
+    applications' windows whose titles happen to contain "save", "export",
+    "open"... (browser tabs, Explorer folders).
+    """
+    pid, _ = _find_running()
+    if pid is None:
+        return []
+    return [w for w in gw.getAllWindows()
+            if safety.window_pid(getattr(w, "_hWnd", None)) == pid]
+
+
 def waveform_locate(args: dict) -> dict:
     path = _locate()
     if path is None:
@@ -385,7 +400,7 @@ def _waveform_ui_state(file_path: str) -> dict:
         "render", "export",
     )
     try:
-        for w in gw.getAllWindows():
+        for w in _waveform_windows(gw):
             title = (w.title or "").strip()
             if not title or title.lower() == "waveform free" or title == "Waveform":
                 continue
@@ -488,7 +503,7 @@ def _close_active_tab() -> bool:
     # Check for a dialog
     try:
         import pygetwindow as gw  # type: ignore[import-untyped]
-        for w in gw.getAllWindows():
+        for w in _waveform_windows(gw):
             tl = (w.title or "").lower().strip()
             if any(k in tl for k in ("save", "discard", "confirm")) \
                     and "waveform" not in tl:
@@ -1029,7 +1044,7 @@ def _wait_for_open_dialog(timeout: float = 4.0) -> bool:
     titles_signaling_dialog = ("open", "load", "select")
     while time.time() < deadline:
         try:
-            for w in gw.getAllWindows():
+            for w in _waveform_windows(gw):
                 title = (w.title or "").strip().lower()
                 # Common file-dialog titles. Waveform on Windows uses
                 # the standard CommonDlg "Open" dialog.
@@ -1042,32 +1057,38 @@ def _wait_for_open_dialog(timeout: float = 4.0) -> bool:
 
 
 def waveform_focus(args: dict) -> dict:
+    """Bring Waveform's main window to the foreground.
+
+    Finds the window by Waveform's process. The original matched any window
+    with "waveform" in its title, which also catches Explorer folders, browser
+    tabs and editors open on this repo, and took the first one.
+    """
     if sys.platform != "win32":
         return {"ok": False, "error": "focus only implemented on Windows"}
-    try:
-        import pygetwindow as gw  # type: ignore[import-untyped]
-    except ImportError:
-        return {"ok": False, "error": "pygetwindow not installed"}
+    import ctypes
 
-    matches = [w for w in gw.getAllWindows() if "waveform" in (w.title or "").lower()]
-    if not matches:
+    from .win_input import _find_waveform_hwnd
+
+    hwnd = _find_waveform_hwnd()
+    if not hwnd:
         return {"ok": False, "error": "no Waveform window found"}
-    win = matches[0]
+    user32 = ctypes.windll.user32
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     try:
-        if win.isMinimized:
-            win.restore()
-        win.activate()
-    except Exception as e:
-        # pygetwindow has flaky activate(); fall back to a Windows API call
-        try:
-            import ctypes
+        from pywinauto.application import Application  # type: ignore[import-untyped]
 
-            hwnd = win._hWnd  # type: ignore[attr-defined]
-            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-        except Exception as e2:
-            return {"ok": False, "error": f"{e}; fallback: {e2}"}
-    return {"ok": True, "title": win.title}
+        Application(backend="win32").connect(handle=hwnd).window(handle=hwnd).set_focus()
+    except Exception:
+        user32.SetForegroundWindow(hwnd)
+    time.sleep(0.05)
+    reason = safety.foreground_is_waveform_error()
+    if reason:
+        return {"ok": False, "error": f"could not bring Waveform to the foreground: {reason}"}
+    length = user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return {"ok": True, "title": buf.value}
 
 
 def _post_close(pid: int) -> int:

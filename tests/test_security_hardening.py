@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -210,6 +211,63 @@ def test_bundled_tools_prefer_the_running_waveform(monkeypatch, tmp_path):
     monkeypatch.setattr(safety, "find_waveform_process", lambda: (1, str(running)))
     if sys.platform == "win32":
         assert safety.find_bundled_tool("ffprobe") == str(running.parent / "ffprobe.exe")
+
+
+# ---------- Waveform 14 workflow helpers ----------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="pywinauto is Windows-only")
+@pytest.mark.parametrize("text", [
+    "Rock+Roll (v2)", "~50% ^up {x} [a]", r"C:\Program Files (x86)\My Songs", "plain name",
+])
+def test_typed_text_is_literal(text):
+    from pywinauto.keyboard import parse_keys
+
+    from waveform_mcp.tools.win_input import escape_send_keys
+
+    actions = parse_keys(escape_send_keys(text), with_spaces=True)
+    assert "".join(a.key for a in actions) == text
+
+
+def test_project_folders_come_from_waveform_settings(monkeypatch, tmp_path):
+    from waveform_mcp.tools import waveform_workflows as wf
+
+    settings = tmp_path / "Tracktion" / "Waveform" / "Waveform.settings"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        '<PROPERTIES><VALUE name="lastpath_projectfile" val="D:\\Music\\waveform"/>'
+        '<PROJECT file="D:\\Music\\waveform\\Song &amp; Dance" id="x"/></PROPERTIES>',
+        encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert wf._settings_project_roots() == [Path("D:\\Music\\waveform")]
+    assert wf._settings_project_dirs() == [Path("D:\\Music\\waveform\\Song & Dance")]
+
+
+def test_dialog_scan_only_sees_waveform_windows(monkeypatch):
+    windows = [SimpleNamespace(title="Save as... - Firefox", _hWnd=1),
+               SimpleNamespace(title="Save changes?", _hWnd=2)]
+    gw = SimpleNamespace(getAllWindows=lambda: windows)
+    monkeypatch.setattr(waveform_app, "_find_running", lambda: (500, "Waveform 14.exe"))
+    monkeypatch.setattr(safety, "window_pid", lambda hwnd: {1: 999, 2: 500}.get(hwnd))
+    assert [w.title for w in waveform_app._waveform_windows(gw)] == ["Save changes?"]
+
+
+def test_ignored_location_is_detected(tmp_path):
+    from waveform_mcp.tools import waveform_workflows as wf
+
+    wanted = tmp_path / "wanted"
+    default = tmp_path / "default"
+    assert wf._location_ignored(str(wanted), default / "Song")
+    assert not wf._location_ignored(str(wanted), wanted / "Song")
+
+
+def test_reopen_edit_rejects_non_edit_files(tmp_path):
+    from waveform_mcp.tools import waveform_workflows as wf
+
+    other = tmp_path / "run.bat"
+    other.write_text("echo hi")
+    assert wf._reopen_edit(str(other))["ok"] is False
+    assert wf._reopen_edit(None)["ok"] is False
 
 
 # ---------- quitting Waveform ----------

@@ -135,7 +135,9 @@ TOOLS: list[dict[str, Any]] = [
             "Type text into an Edit control. JUCE Edits don't expose ValuePattern, "
             "so we focus the control via UIA and then send keystrokes. Target by `name` "
             "if the Edit has an accessible name, or by `index` (Nth Edit in the window) "
-            "for unnamed JUCE fields. Pass window_title to target a dialog."
+            "for unnamed JUCE fields. Pass window_title to target a dialog. The text is "
+            "typed literally. commit=true presses Tab afterwards, which JUCE fields need "
+            "before a dialog button reads their value."
         ),
         "inputSchema": {
             "type": "object",
@@ -146,6 +148,7 @@ TOOLS: list[dict[str, Any]] = [
                 "index": {"type": "integer", "description": "Nth Edit (0-based)"},
                 "window_title": {"type": "string"},
                 "clear_first": {"type": "boolean", "default": True},
+                "commit": {"type": "boolean", "default": False},
                 "delay_after": {"type": "number", "default": 0.3},
             },
         },
@@ -618,6 +621,19 @@ def win_uia_invoke(args: dict) -> dict:
         return {"ok": False, "error": str(e), "type": type(e).__name__}
 
 
+_SEND_KEYS_SPECIAL = set("+^%~(){}[]")
+
+
+def escape_send_keys(text: str) -> str:
+    """Make `text` type literally through pywinauto's send_keys.
+
+    send_keys treats + ^ % as Shift/Ctrl/Alt, ~ as Enter, ( ) as grouping and
+    { } as key names, so a name like "Rock+Roll (v2)" was typed wrong and a "~"
+    pressed Enter mid-dialog. Each special character is wrapped in braces.
+    """
+    return "".join("{" + c + "}" if c in _SEND_KEYS_SPECIAL else c for c in text)
+
+
 def win_uia_focus_and_type(args: dict) -> dict:
     """Focus an Edit control via UIA, then type text via the keystroke channel.
 
@@ -638,6 +654,7 @@ def win_uia_focus_and_type(args: dict) -> dict:
     index = args.get("index")
     window_title = args.get("window_title")
     clear_first = bool(args.get("clear_first", True))
+    commit = bool(args.get("commit", False))
     delay = float(args.get("delay_after", 0.3))
 
     try:
@@ -669,7 +686,11 @@ def win_uia_focus_and_type(args: dict) -> dict:
             return {"ok": False, "error": f"{reason}; text not typed"}
         if clear_first:
             send_keys("^a{DELETE}", with_spaces=True, pause=0.02)
-        send_keys(text, with_spaces=True, pause=0.01)
+        send_keys(escape_send_keys(text), with_spaces=True, pause=0.01)
+        if commit:
+            # JUCE text fields commit their value when focus leaves them; a
+            # dialog button invoked straight after typing reads the old value.
+            send_keys("{TAB}", pause=0.02)
         if delay > 0:
             time.sleep(delay)
         return {"ok": True, "text": text}

@@ -80,6 +80,19 @@ uv pip compile pyproject.toml --generate-hashes --python-platform windows --pyth
 
 See [Security and configuration](#security-and-configuration) for the other settings.
 
+### Waveform 14
+
+Tested with Waveform FREE 14.1. Differences from Waveform 13 that the tools handle:
+
+- **Menus.** The single *Menu* button became a menu bar (*File, Edit, … Track*), shown only while an edit tab is active. `waveform_menu_invoke` opens the first item from the bar and switches to the edit tab when needed (pass `edit_tab` if several edits are open).
+- **Revert.** The confirmation has explicit *Cancel / Revert* buttons (Enter doesn't confirm), and Waveform may close the edit instead of reloading it. `waveform_revert_to_saved` presses *Revert* and reopens the file (`edit_file_path`, default: the last file written by `edit_save`).
+- **Projects only.** Waveform 14 only opens edits inside a Waveform project, a folder with `project_info.json`; a standalone `.tracktionedit` written from scratch won't open. So start from a project:
+  1. Create the project in Waveform, or with `waveform_new_project`.
+  2. Write into its edit file (`edit_open` that file, change it, `edit_save` to the same path).
+  3. `waveform_revert_to_saved` to load the changes.
+- **Project folder.** The New Project dialog ignores typed locations, so projects go in Waveform's default folder (`OneDrive\Music\waveform` here). Choose a different folder in Waveform first if you want one; `waveform_new_project` warns if a requested `location` wasn't used.
+- **Bundled tools.** ffmpeg/ffprobe are found in whichever `Program Files\Tracktion\Waveform*` folder is installed.
+
 ---
 
 ## Security and configuration

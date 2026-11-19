@@ -17,6 +17,7 @@ That's the rule for keeping this file from becoming a dumping ground.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -35,9 +36,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Hands-off: open Waveform's New Project dialog, fill in project name, "
             "click Create Project, and return the resulting project + edit file paths. "
-            "Default location is whatever Waveform pre-fills (typically OneDrive\\Documents). "
-            "Set `location` to override. The dialog's 'Open Default Edit' checkbox is "
-            "left at its default (checked) so an empty Edit opens after creation."
+            "The project goes in Waveform's default project folder (the one its dialog "
+            "pre-fills; Waveform 14: OneDrive\\Music\\waveform). To use another folder, "
+            "change it in Waveform before calling this. The dialog's 'Open Default Edit' "
+            "checkbox is left checked so an empty Edit opens after creation."
         ),
         "inputSchema": {
             "type": "object",
@@ -46,7 +48,11 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string", "description": "Project name"},
                 "location": {
                     "type": "string",
-                    "description": "Optional: parent directory for the project folder",
+                    "description": (
+                        "Optional parent folder. Waveform 14's dialog ignores typed "
+                        "locations, so the result has a warning if the project landed "
+                        "in the default folder instead."
+                    ),
                 },
                 "wait_seconds": {
                     "type": "number",
@@ -70,10 +76,23 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Reload the active Edit from disk via File → Revert to saved state. "
             "Use after writing new content to the .tracktionedit so Waveform refreshes "
-            "its in-memory copy. Auto-confirms the 'Are you sure?' popup with Enter. "
-            "Retries up to 3x; gates on a loaded project."
+            "its in-memory copy. Confirms the 'Are you sure?' popup (its Revert button "
+            "on Waveform 14, Enter on 13). Waveform 14 closes the edit on revert, so it "
+            "is reopened from edit_file_path (default: the file last written by "
+            "edit_save). Retries up to 3x; gates on a loaded project."
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "edit_file_path": {
+                    "type": "string",
+                    "description": (
+                        "The .tracktionedit to reopen if Waveform closes the edit. "
+                        "Defaults to the last path saved with edit_save."
+                    ),
+                },
+            },
+        },
     },
     {
         "name": "waveform_project_loaded",
@@ -99,10 +118,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "waveform_menu_invoke",
         "description": (
-            "Walk Waveform's main 'Menu' (bottom-left button) and invoke a chain of "
-            "menu items. Pass the chain as an array, e.g. ['Track', 'Add track']. "
-            "Filters menu items to popup windows so we don't false-match on tracks/buttons "
-            "named the same in the main view."
+            "Invoke a chain of Waveform menu items, e.g. ['Track', 'Add track']. "
+            "Opens the first item from the menu bar (Waveform 14, switching to the edit "
+            "tab if needed) or from the 'Menu' button (Waveform 13). Filters menu items "
+            "to popup windows so we don't false-match on tracks/buttons named the same "
+            "in the main view. Brings Waveform to the foreground."
         ),
         "inputSchema": {
             "type": "object",
@@ -112,6 +132,13 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Sequence of menu item names to click",
+                },
+                "edit_tab": {
+                    "type": "string",
+                    "description": (
+                        "Edit tab to switch to if the menu isn't showing (needed when "
+                        "several edits are open), e.g. 'My Song Edit 1'"
+                    ),
                 },
                 "delay_after": {"type": "number", "default": 0.6},
             },
@@ -256,6 +283,33 @@ def _wait_for_window_to_close(title: str, timeout: float = 8.0) -> bool:
     return False
 
 
+def _waveform_settings_text() -> str:
+    path = Path(os.environ.get("APPDATA", "")) / "Tracktion" / "Waveform" / "Waveform.settings"
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _settings_project_dirs() -> list[Path]:
+    """Project folders listed in Waveform.settings (its project list)."""
+    import html
+    import re
+
+    text = _waveform_settings_text()
+    return [Path(html.unescape(m)) for m in re.findall(r'\bfile="([^"]+)"', text)]
+
+
+def _settings_project_roots() -> list[Path]:
+    """The folder Waveform last created/opened projects in (its default)."""
+    import html
+    import re
+
+    text = _waveform_settings_text()
+    return [Path(html.unescape(m)) for m in
+            re.findall(r'name="lastpath_projectfile"\s+val="([^"]+)"', text)]
+
+
 def waveform_new_project(args: dict) -> dict:
     err = _windows_only()
     if err:
@@ -282,22 +336,29 @@ def waveform_new_project(args: dict) -> dict:
         return {"ok": False, "error": "New Project dialog did not appear"}
 
     # Edit 0 is Name, Edit 1 is Location.
+    # commit=True tabs out of each field: JUCE only commits a field's text when
+    # it loses focus, so without it Create Project used the pre-filled location.
     type_name = win_input.win_uia_focus_and_type({
         "text": name,
         "index": 0,
         "window_title": "New Project",
         "clear_first": True,
+        "commit": True,
     })
     if not type_name.get("ok"):
         return {"ok": False, "error": f"could not type name: {type_name.get('error')}"}
 
     if location:
-        win_input.win_uia_focus_and_type({
+        type_location = win_input.win_uia_focus_and_type({
             "text": location,
             "index": 1,
             "window_title": "New Project",
             "clear_first": True,
+            "commit": True,
         })
+        if not type_location.get("ok"):
+            return {"ok": False,
+                    "error": f"could not type location: {type_location.get('error')}"}
 
     # Read back the location so we know where files will land.
     inspect = win_input.win_uia_inspect({
@@ -325,6 +386,10 @@ def waveform_new_project(args: dict) -> dict:
     candidates = []
     if location:
         candidates.append(Path(location) / name)
+    # Where Waveform says its projects are (Waveform 14 defaults to
+    # OneDrive\Music\waveform, which the fixed list below never covered).
+    candidates.extend(d for d in _settings_project_dirs() if d.name == name)
+    candidates.extend(root / name for root in _settings_project_roots())
     # Default JUCE/Waveform locations
     docs = Path.home() / "Documents"
     onedrive_docs = Path.home() / "OneDrive" / "Documents"
@@ -348,13 +413,27 @@ def waveform_new_project(args: dict) -> dict:
     tracktion_files = list(project_dir.glob("*.tracktion"))
     edit_files = list(project_dir.glob("*.tracktionedit"))
 
-    return {
+    result = {
         "ok": True,
         "name": name,
         "project_dir": str(project_dir),
         "project_file": str(tracktion_files[0]) if tracktion_files else None,
         "edit_files": [str(p) for p in edit_files],
     }
+    if location and _location_ignored(location, project_dir):
+        result["warning"] = (
+            f"location {location!r} was not used; Waveform created the project in its "
+            f"default folder {str(project_dir.parent)!r}. Change the default in Waveform "
+            "to put projects elsewhere.")
+    return result
+
+
+def _location_ignored(location: str, project_dir: Path) -> bool:
+    """True if the project didn't land in the requested parent folder."""
+    try:
+        return project_dir.parent.resolve() != Path(location).resolve()
+    except OSError:
+        return True
 
 
 def waveform_save(args: dict) -> dict:
@@ -390,19 +469,98 @@ def waveform_revert_to_saved(args: dict) -> dict:
 
     _restore_if_minimized()
 
+    edit_path = args.get("edit_file_path")
+    if not edit_path:
+        from . import edit as edit_tools
+        edit_path = getattr(edit_tools, "_open_path", None)
+
     last_error: str | None = None
     for attempt in range(3):
-        # Clear any half-open menu so the menu_invoke starts clean.
-        win_input.win_send_keys({"keys": "{ESC}{ESC}{ESC}", "silent_focus": True, "delay_after": 0.25})
-        res = waveform_menu_invoke({"path": ["File", "Revert to saved state..."]})
+        # waveform_menu_invoke focuses Waveform and clears half-open menus itself.
+        # The tab hint is the edit's file name, which is its tab title.
+        res = waveform_menu_invoke({"path": ["File", "Revert to saved state..."],
+                                    "edit_tab": Path(edit_path).stem if edit_path else None})
         if res.get("ok"):
-            time.sleep(0.5)
-            # Confirm the "Are you sure?" popup. Default button is Yes; Enter activates it.
-            win_input.win_send_keys({"keys": "{ENTER}", "silent_focus": True, "delay_after": 0.5})
-            return {"ok": True, "attempts": attempt + 1}
+            confirmed = _confirm_revert_dialog(win_input)
+            # Checked twice: Waveform either reloads the edit in place or
+            # closes it, and a close can land after the first look.
+            time.sleep(1.5)
+            still_open = _project_is_loaded()
+            if still_open:
+                time.sleep(1.5)
+                still_open = _project_is_loaded()
+            if still_open:
+                # The edit reloaded in place.
+                return {"ok": True, "attempts": attempt + 1, "confirmed_by": confirmed,
+                        "mode": "reloaded"}
+            # Waveform 14 closes the edit on revert; open the file again.
+            reopened = _reopen_edit(edit_path)
+            if not reopened.get("ok"):
+                return {"ok": False, "attempts": attempt + 1, "confirmed_by": confirmed,
+                        "error": f"Waveform closed the edit on revert and it could not be "
+                                 f"reopened: {reopened.get('error')}"}
+            return {"ok": True, "attempts": attempt + 1, "confirmed_by": confirmed,
+                    "mode": "reopened", "edit_file_path": edit_path}
         last_error = res.get("error") or "unknown"
         time.sleep(0.5)
     return {"ok": False, "error": f"revert failed after 3 attempts: {last_error}"}
+
+
+def _confirm_revert_dialog(win_input, timeout: float = 3.0) -> str:
+    """Confirm the revert prompt. Returns how: "button" or "enter".
+
+    Waveform 14 shows a window titled "Revert" with Cancel / Revert buttons,
+    where Enter does not confirm; its "Revert" button is invoked by exact name.
+    Waveform 13's prompt is confirmed with Enter, the original behaviour.
+    """
+    from .win_input import _uia_app, _walk_uia  # type: ignore[attr-defined]
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app, _ = _uia_app()
+        if app is not None:
+            for w in app.windows():
+                if w.window_text() != "Revert":
+                    continue
+                for it in _walk_uia(w, want_types=("Button",), max_results=50):
+                    if it["name"] == "Revert":
+                        it["elem"].invoke()
+                        return "button"
+        time.sleep(0.2)
+    win_input.win_send_keys({"keys": "{ENTER}", "silent_focus": False, "delay_after": 0.5})
+    return "enter"
+
+
+def _reopen_edit(edit_path: str | None, timeout: float = 15.0) -> dict:
+    """Open a .tracktionedit in the running Waveform and wait for its tab.
+
+    Runs Waveform's own executable with the file, which is what its registered
+    file association does; a running Waveform takes the file over. Waveform 14
+    only opens edits that belong to a Waveform project (a folder with
+    project_info.json, created via waveform_new_project).
+    """
+    if not edit_path:
+        return {"ok": False, "error": "no edit file known; pass edit_file_path"}
+    p = Path(edit_path)
+    if p.suffix.lower() != ".tracktionedit" or not p.is_file():
+        return {"ok": False, "error": f"not an existing .tracktionedit: {edit_path}"}
+    import subprocess
+
+    from .. import safety
+    from .waveform_app import _locate
+
+    exe = _locate()
+    if exe is None or safety.waveform_exe_error(exe):
+        return {"ok": False, "error": "Waveform executable not found"}
+    subprocess.Popen([exe, str(p)], close_fds=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if _project_is_loaded():
+            return {"ok": True}
+    return {"ok": False, "error": (
+        f"Waveform did not open {p.name} within {timeout:g}s; Waveform 14 only opens "
+        "edits inside a Waveform project (see waveform_new_project)")}
 
 
 def _project_is_loaded() -> bool:
@@ -489,36 +647,132 @@ def waveform_active_tab(args: dict) -> dict:
     return {"ok": True, "main_window_title": win.window_text(), "tab_buttons": tab_candidates}
 
 
+def _main_window(app):
+    """Waveform's main window: the largest of its top-level windows. Popup
+    menus are also titled "Waveform", so the title alone can't pick it."""
+    def area(w):
+        r = w.element_info.rectangle
+        return (r.right - r.left) * (r.bottom - r.top)
+    windows = app.windows()
+    return max(windows, key=area) if windows else None
+
+
+def _show_edit_tab(app, edit_tab: str | None) -> bool:
+    """Switch to an edit tab so Waveform 14 shows its edit menu bar.
+
+    Uses `edit_tab` if that tab is open, else the only open edit tab. With
+    several edits open and no hint, does nothing rather than guess.
+    """
+    from .waveform_app import _list_tab_titles
+    from .win_input import _walk_uia  # type: ignore[attr-defined]
+
+    tabs = _list_tab_titles()
+    target = edit_tab if edit_tab in tabs else (tabs[0] if len(tabs) == 1 else None)
+    if target is None:
+        return False
+    main = _main_window(app)
+    for it in _walk_uia(main, want_types=("Button",), max_results=500):
+        if it["name"] == target:
+            it["elem"].invoke()
+            time.sleep(0.6)
+            return True
+    return False
+
+
+def _open_first_menu(path: list[str], edit_tab: str | None = None
+                     ) -> tuple[list[str] | None, str | None]:
+    """Open the menu that holds `path`. Returns (steps still to invoke, error).
+
+    Waveform 13 has a single "Menu" button whose popup lists File, Track...,
+    so the whole path is walked from that popup. Waveform 14 replaced it with
+    a menu bar (File, Edit, ..., Track, shown while an edit is open), so
+    path[0] is opened from the bar and the walk continues from path[1].
+
+    Exact names only: win_uia_invoke falls back to substring matches, which
+    on Waveform 14 hit the wrong controls (e.g. "Project" -> "Projects" tab).
+    """
+    from .win_input import _uia_app, _walk_uia  # type: ignore[attr-defined]
+
+    app, error = _uia_app()
+    if app is None:
+        return None, error
+
+    def scan():
+        main = _main_window(app)
+        if main is None:
+            return None, None
+        bar_bottom = main.element_info.rectangle.top + 40
+        button = item = None
+        for it in _walk_uia(main, want_types=("Button", "MenuItem"), max_results=2000):
+            if it["control_type"] == "Button" and it["name"] == "Menu":
+                button = it["elem"]
+                break
+            if (item is None and it["control_type"] == "MenuItem" and it["name"] == path[0]
+                    and it["rect"] and it["rect"][1] < bar_bottom):
+                item = it["elem"]
+        return button, item
+
+    menu_button, bar_item = scan()
+    if menu_button is None and bar_item is None and _show_edit_tab(app, edit_tab):
+        # Waveform 14 only shows File/Edit/Track... while an edit tab is
+        # active; the Welcome/Projects/Settings tabs have a shorter bar.
+        menu_button, bar_item = scan()
+    try:
+        if menu_button is not None:
+            menu_button.invoke()
+            time.sleep(0.4)
+            return list(path), None
+        if bar_item is not None:
+            bar_item.invoke()
+            time.sleep(0.4)
+            return list(path[1:]), None
+    except Exception as e:
+        return None, f"could not open the {path[0]!r} menu: {e}"
+    return None, (f"no 'Menu' button (Waveform 13) or {path[0]!r} menu-bar item "
+                  "(Waveform 14) found; is an edit open?")
+
+
 def waveform_menu_invoke(args: dict) -> dict:
-    """Open the main Menu and invoke a chain of menu items by name.
+    """Open Waveform's menu and invoke a chain of menu items by name.
 
     Strategy:
-      1. Press Esc twice to clear any open menu state
-      2. Invoke the 'Menu' button via UIA — opens main popup
-      3. For each name in `path`: find a MenuItem with that name in any
-         small popup window (filters out main-view false matches), invoke it,
-         wait for next submenu to render
+      1. Bring Waveform to the foreground (JUCE closes popup menus when its
+         app isn't active) and press Esc twice to clear any open menu
+      2. Open the first menu: the 'Menu' button on Waveform 13, or the
+         path[0] menu-bar item on Waveform 14 (see _open_first_menu)
+      3. For each remaining name: find a MenuItem with that name in a popup
+         window (not the main window, to avoid matching track names), invoke
+         it, wait for the next submenu to render
+
+    Waveform is left in the foreground.
     """
     err = _windows_only()
     if err:
         return err
 
     from . import win_input
-    from .win_input import _uia_app, _walk_uia  # type: ignore[attr-defined]
+    from .waveform_app import waveform_focus
 
-    path: list[str] = args["path"]
+    path: list[str] = list(args["path"])
     delay = float(args.get("delay_after", 0.6))
+    if not path:
+        return {"ok": False, "error": "path is empty"}
 
-    # Clear stale menu state
-    win_input.win_send_keys({"keys": "{ESC}", "silent_focus": True, "delay_after": 0.2})
-    win_input.win_send_keys({"keys": "{ESC}", "silent_focus": True, "delay_after": 0.2})
+    focus = waveform_focus({})
+    if not focus.get("ok"):
+        return {"ok": False, "error": f"could not focus Waveform: {focus.get('error')}"}
+    time.sleep(0.2)
 
-    open_menu = win_input.win_uia_invoke({"name": "Menu", "control_type": "Button", "delay_after": 0.4})
-    if not open_menu.get("ok"):
-        return {"ok": False, "error": f"could not open Menu: {open_menu.get('error')}"}
+    # Clear stale menu state (Waveform is already in front, so no focus juggling)
+    win_input.win_send_keys({"keys": "{ESC}", "silent_focus": False, "delay_after": 0.2})
+    win_input.win_send_keys({"keys": "{ESC}", "silent_focus": False, "delay_after": 0.2})
 
-    invoked = []
-    for step in path:
+    remaining, error = _open_first_menu(path, args.get("edit_tab"))
+    if remaining is None:
+        return {"ok": False, "error": error}
+
+    invoked = path[: len(path) - len(remaining)]
+    for step in remaining:
         time.sleep(0.3)
         elem = _find_menuitem_in_popups(step)
         if elem is None:
@@ -541,18 +795,22 @@ def waveform_menu_invoke(args: dict) -> dict:
 
 
 def _find_menuitem_in_popups(name: str):
-    """Look for a MenuItem with this name in any process window that is
-    smaller than the main app window (i.e. a popup). Excludes the main window
-    so we don't false-match on track names like 'Track 1' that appear in lanes.
+    """Look for a MenuItem with this name in any process window other than the
+    main app window (i.e. a popup). Excludes the main window so we don't
+    false-match on track names like 'Track 1' that appear in lanes, or on the
+    Waveform 14 menu bar itself.
     """
     from .win_input import _uia_app, _walk_uia  # type: ignore[attr-defined]
 
     app, _ = _uia_app()
     if app is None:
         return None
+    main = _main_window(app)
+    main_handle = main.handle if main is not None else None
     for w in app.windows():
-        rect = w.element_info.rectangle
-        if rect.right - rect.left >= 1200:  # main app window
+        # By handle, not width: the old ">= 1200 px wide" test let a smaller
+        # main window through and treated it as a popup.
+        if w.handle == main_handle:
             continue
         for it in _walk_uia(w, want_types=("MenuItem",), max_results=80):
             if it["name"] == name:
