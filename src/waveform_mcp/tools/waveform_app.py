@@ -126,7 +126,10 @@ def _installed_candidates() -> list[str]:
             continue
         tracktion = Path(root) / "Tracktion"
         if tracktion.is_dir():
-            found.extend(str(p) for p in sorted(tracktion.glob("*/Waveform*.exe")))
+            # Newest version first, so Waveform 14 wins over a leftover 13.
+            found.extend(str(p) for p in sorted(
+                tracktion.glob("*/Waveform*.exe"),
+                key=lambda p: safety._version_key(p.parent), reverse=True))
     return found
 
 
@@ -141,7 +144,7 @@ def _locate() -> str | None:
         if safety.waveform_exe_error(cand) is None:
             return cand
     # PATH fallback
-    for name in ("Waveform 13.exe", "Waveform.exe"):
+    for name in ("Waveform 14.exe", "Waveform 13.exe", "Waveform.exe"):
         p = shutil.which(name)
         if p:
             return p

@@ -187,6 +187,31 @@ def test_waveform_launch_only_opens_tracktionedit(monkeypatch, tmp_path):
     assert "not a .tracktionedit" in result["error"]
 
 
+def test_bundled_tools_follow_the_installed_version(monkeypatch, tmp_path):
+    tracktion = tmp_path / "Tracktion"
+    for version in ("Waveform 9", "Waveform 13", "Waveform 14"):
+        (tracktion / version).mkdir(parents=True)
+        (tracktion / version / "ffmpeg.exe").write_bytes(b"")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.setattr(safety, "find_waveform_process", lambda: (None, None))
+    if sys.platform == "win32":
+        expected = tracktion / "Waveform 14" / "ffmpeg.exe"
+        assert safety.find_bundled_tool("ffmpeg") == str(expected)
+
+
+def test_bundled_tools_prefer_the_running_waveform(monkeypatch, tmp_path):
+    running = tmp_path / "Custom" / "Waveform 14.exe"
+    running.parent.mkdir()
+    running.write_bytes(b"")
+    (running.parent / "ffprobe.exe").write_bytes(b"")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "nothing"))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.setattr(safety, "find_waveform_process", lambda: (1, str(running)))
+    if sys.platform == "win32":
+        assert safety.find_bundled_tool("ffprobe") == str(running.parent / "ffprobe.exe")
+
+
 # ---------- quitting Waveform ----------
 
 

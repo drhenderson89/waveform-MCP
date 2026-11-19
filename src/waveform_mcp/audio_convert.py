@@ -13,22 +13,15 @@ changed since the converted file was written.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 
 def _find_ffmpeg() -> str | None:
     """Locate ffmpeg.exe — prefer Waveform's bundled copy, fall back to PATH."""
-    candidates = [
-        Path(r"C:\Program Files\Tracktion\Waveform 13\ffmpeg.exe"),
-        Path(r"C:\Program Files\Tracktion\Waveform 12\ffmpeg.exe"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    on_path = shutil.which("ffmpeg")
-    return on_path
+    from .safety import find_bundled_tool
+
+    return find_bundled_tool("ffmpeg")
 
 
 def ensure_wav(source: str | Path) -> str:

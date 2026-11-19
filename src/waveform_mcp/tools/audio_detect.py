@@ -60,14 +60,9 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def _ff_path(name: str = "ffmpeg") -> str:
-    candidates = [rf"C:\Program Files\Tracktion\Waveform 13\{name}.exe", name]
-    for c in candidates:
-        try:
-            subprocess.run([c, "-version"], capture_output=True, check=True, timeout=5)
-            return c
-        except Exception:
-            continue
-    return name
+    from ..safety import find_bundled_tool
+
+    return find_bundled_tool(name) or name
 
 
 def _decode_to_mono_pcm(path: str, sample_rate: int = 22050) -> tuple[list[float], int]:

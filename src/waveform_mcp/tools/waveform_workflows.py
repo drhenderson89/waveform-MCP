@@ -650,19 +650,13 @@ def waveform_render_to_mp3(args: dict) -> dict:
     timeout = float(args.get("render_timeout_seconds", 30))
     out_path_arg = args.get("out_path")
 
-    # Locate ffmpeg
-    ffmpeg = Path(r"C:\Program Files\Tracktion\Waveform 13\ffmpeg.exe")
-    if not ffmpeg.exists():
-        # Try Waveform 12 / fall back
-        for cand in [
-            r"C:\Program Files\Tracktion\Waveform 12\ffmpeg.exe",
-            r"C:\Program Files\Tracktion\Waveform 11\ffmpeg.exe",
-        ]:
-            if Path(cand).exists():
-                ffmpeg = Path(cand)
-                break
-        else:
-            return {"ok": False, "error": "ffmpeg.exe not found in Waveform install"}
+    # Locate ffmpeg (Waveform's bundled copy, whichever version is installed)
+    from ..safety import find_bundled_tool
+
+    found_ffmpeg = find_bundled_tool("ffmpeg")
+    if not found_ffmpeg:
+        return {"ok": False, "error": "ffmpeg.exe not found in Waveform install"}
+    ffmpeg = Path(found_ffmpeg)
 
     # Find candidate Exported folders (Documents/OneDrive Documents subtrees)
     candidate_roots = [

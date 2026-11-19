@@ -74,7 +74,9 @@ def _read_library() -> list[dict]:
 
 
 def _ffprobe_duration_seconds(path: str) -> float | None:
-    candidates = [r"C:\Program Files\Tracktion\Waveform 13\ffprobe.exe", "ffprobe"]
+    from ..safety import find_bundled_tool
+
+    candidates = [find_bundled_tool("ffprobe") or "ffprobe"]
     for ff in candidates:
         try:
             res = subprocess.run(

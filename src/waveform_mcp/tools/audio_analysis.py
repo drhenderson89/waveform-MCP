@@ -71,25 +71,15 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def _ffmpeg_path() -> str:
-    candidates = [r"C:\Program Files\Tracktion\Waveform 13\ffmpeg.exe", "ffmpeg"]
-    for c in candidates:
-        try:
-            subprocess.run([c, "-version"], capture_output=True, check=True, timeout=5)
-            return c
-        except Exception:
-            continue
-    return "ffmpeg"
+    from ..safety import find_bundled_tool
+
+    return find_bundled_tool("ffmpeg") or "ffmpeg"
 
 
 def _ffprobe_path() -> str:
-    candidates = [r"C:\Program Files\Tracktion\Waveform 13\ffprobe.exe", "ffprobe"]
-    for c in candidates:
-        try:
-            subprocess.run([c, "-version"], capture_output=True, check=True, timeout=5)
-            return c
-        except Exception:
-            continue
-    return "ffprobe"
+    from ..safety import find_bundled_tool
+
+    return find_bundled_tool("ffprobe") or "ffprobe"
 
 
 def audio_loudness_lufs(args: dict) -> dict:

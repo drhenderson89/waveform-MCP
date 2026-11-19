@@ -147,6 +147,51 @@ def configured_waveform_exe() -> str | None:
     return None
 
 
+def _version_key(folder: Path) -> int:
+    m = re.search(r"\d+", folder.name)
+    return int(m.group()) if m else -1
+
+
+def waveform_install_dirs() -> list[Path]:
+    """Folders that may hold Waveform and its bundled tools, best first:
+    WAVEFORM_EXE's folder, the running Waveform's folder, then every
+    Program Files/Tracktion/Waveform* folder, newest version first."""
+    dirs: list[Path] = []
+    configured = configured_waveform_exe()
+    if configured:
+        dirs.append(Path(configured).parent)
+    _, running_exe = find_waveform_process()
+    if running_exe:
+        dirs.append(Path(running_exe).parent)
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if not root:
+            continue
+        tracktion = Path(root) / "Tracktion"
+        if tracktion.is_dir():
+            found = [d for d in tracktion.iterdir()
+                     if d.is_dir() and d.name.lower().startswith("waveform")]
+            dirs.extend(sorted(found, key=_version_key, reverse=True))
+    unique: list[Path] = []
+    for d in dirs:
+        if d not in unique:
+            unique.append(d)
+    return unique
+
+
+def find_bundled_tool(name: str) -> str | None:
+    """Path to a tool Waveform ships (ffmpeg, ffprobe) from whichever Waveform
+    is installed, falling back to PATH. The original hard-coded the Waveform
+    13/12 folders, so other versions fell through to a system copy."""
+    exe_name = name if name.lower().endswith(".exe") or sys.platform != "win32" else f"{name}.exe"
+    for folder in waveform_install_dirs():
+        candidate = folder / exe_name
+        if candidate.is_file():
+            return str(candidate)
+    import shutil
+
+    return shutil.which(name)
+
+
 # ---------- input guards (Windows) ----------
 
 
